@@ -1,4 +1,4 @@
-function process_production_to_structured_data(P_stc, targetStepMin)
+function process_production_to_structured_data(cfg, targetStepMin)
 % PROCESS_PRODUCTION_TO_STRUCTURED_DATA
 %
 % Feldolgozza a BUD BSRN .tab fajlokat, es napi bontasban legeneralja
@@ -41,12 +41,21 @@ function process_production_to_structured_data(P_stc, targetStepMin)
     consumptionFolderPath = fullfile(functionFolderPath, 'consumption');
     outputFolderPath = fullfile(functionFolderPath, 'production');
 
-    if nargin < 1 || isempty(P_stc)
-        error('P_stc megadasa kotelezo. Pelda: process_production_to_structured_data(500, 15)');
+    if nargin < 1 || isempty(cfg) || ~isstruct(cfg)
+        error('cfg megadasa kotelezo. Pelda: cfg = create_configurations(basePath); process_production_to_structured_data(cfg, 15)');
     end
 
+    pvPars = local_get_pv_module_params_from_cfg(cfg);
+
     if nargin < 2 || isempty(targetStepMin)
-        targetStepMin = 5;
+
+        if isfield(cfg, 'production') && isfield(cfg.production, 'targetStepMin') && ...
+            ~isempty(cfg.production.targetStepMin)
+
+            targetStepMin = cfg.production.targetStepMin;
+        else
+            targetStepMin = 15;
+        end
     end
 
     if targetStepMin <= 0 || abs(targetStepMin - round(targetStepMin)) > 1e-9
@@ -353,7 +362,7 @@ function process_production_to_structured_data(P_stc, targetStepMin)
             % -----------------------------------------------------------------
             % H) ResultBuffer generalas
             % -----------------------------------------------------------------
-            create_daily_production_buffer(P_stc, saveYear, saveMonth, saveDay, tminVec, ...
+            create_daily_production_buffer(pvPars, saveYear, saveMonth, saveDay, tminVec, ...
                 GHI_out, DIF_out, SWU_out, Tamb_out, ...
                 sunElev_vec, sunAzim_vec, outputFolderPath);
 
@@ -467,7 +476,7 @@ function tf = local_same_month_day(sourceDate, targetDate)
 end
 
 
-function create_daily_production_buffer(P_stc, year, month, day, tminVec, GHI_vec, DIF_vec, SWU_vec, Tamb_vec, sunElev_vec, sunAzim_vec, savePath)
+function create_daily_production_buffer(pvPars, year, month, day, tminVec, GHI_vec, DIF_vec, SWU_vec, Tamb_vec, sunElev_vec, sunAzim_vec, savePath)
 % CREATE_DAILY_PRODUCTION_BUFFER
 %
 % Legeneralja a napi termelesi matrixot minden orientaciora.
@@ -493,7 +502,7 @@ function create_daily_production_buffer(P_stc, year, month, day, tminVec, GHI_ve
         for tz = tiltsZ
 
             [P_dc_daily, V_mpp_daily] = pv_module_model( ...
-                P_stc, ...
+                pvPars, ...
                 tminVec, ...
                 GHI_vec, ...
                 DIF_vec, ...
@@ -558,7 +567,18 @@ function create_daily_production_buffer(P_stc, year, month, day, tminVec, GHI_ve
     'voltageField', 'tVMPP', ...
     'voltageMeaning', 'PV module MPP voltage for the given orientation', ...
     'powerUnit', 'W', ...
-    'voltageUnit', 'V');
+    'voltageUnit', 'V', ...
+    'modulePower_kWp', pvPars.modulePower_kWp, ...
+    'modulePower_W', pvPars.P_stc_W, ...
+    'moduleArea_m2', pvPars.moduleArea_m2, ...
+    'moduleVmp_STC_V', pvPars.V_mpp_stc_V, ...
+    'moduleVoc_STC_V', pvPars.V_oc_stc_V, ...
+    'powerTempCoeff_per_C', pvPars.gamma_P_per_C, ...
+    'vmpTempCoeff_per_C', pvPars.beta_vmp_per_C, ...
+    'vocTempCoeff_per_C', pvPars.beta_voc_per_C, ...
+    'NOCT_C', pvPars.NOCT_C, ...
+    'useBifacial', pvPars.useBifacial, ...
+    'bifacialFactor', pvPars.bifacialFactor);
 
     resultBuffer.windSpeedData = struct();
 
@@ -633,4 +653,80 @@ function [elevation, azimuth] = calculate_sun_position(datetimeVec, lat, lon)
 
     elevation = elevation(:).';
     azimuth = azimuth(:).';
+end
+
+function pvPars = local_get_pv_module_params_from_cfg(cfg)
+
+    pv = cfg.pv;
+
+    pvPars = struct();
+
+    % ---------------------------------------------------------------------
+    % Datasheet parameters
+    % ---------------------------------------------------------------------
+    pvPars.modulePower_kWp = pv.modulePower_kWp;
+    pvPars.P_stc_W = 1000 * pv.modulePower_kWp;
+
+    pvPars.moduleArea_m2 = pv.moduleArea_m2;
+
+    pvPars.V_mpp_stc_V = pv.moduleVmp_STC_V;
+    pvPars.V_oc_stc_V = pv.moduleVoc_STC_V;
+
+    pvPars.gamma_P_per_C = pv.powerTempCoeff_per_C;
+    pvPars.beta_vmp_per_C = pv.vmpTempCoeff_per_C;
+    pvPars.beta_voc_per_C = pv.moduleVocTempCoeff_per_C;
+
+    pvPars.NOCT_C = pv.NOCT_C;
+
+    % ---------------------------------------------------------------------
+    % Irradiance and Vmpp correction parameters
+    % ---------------------------------------------------------------------
+    pvPars.G_ref_Wm2 = pv.Gref_Wm2;
+    pvPars.G_min_for_voltage_Wm2 = pv.GminVoltage_Wm2;
+
+    pvPars.vmp_irr_log_coeff = pv.vmpIrrLogCoeff;
+    pvPars.vmp_irr_factor_min = pv.vmpIrrFactorMin;
+    pvPars.vmp_irr_factor_max = pv.vmpIrrFactorMax;
+    pvPars.vmp_temp_factor_min = pv.vmpTempFactorMin;
+
+    % ---------------------------------------------------------------------
+    % Bifacial / rear-side model parameters
+    % ---------------------------------------------------------------------
+    pvPars.useBifacial = pv.useBifacial;
+    pvPars.bifacialFactor = pv.bifacialFactor;
+    pvPars.groundAlbedo = pv.groundAlbedo;
+
+    % ---------------------------------------------------------------------
+    % Basic physical validation
+    % ---------------------------------------------------------------------
+    if pvPars.modulePower_kWp <= 0
+        error('cfg.pv.modulePower_kWp must be positive.');
+    end
+
+    if pvPars.V_mpp_stc_V <= 0
+        error('cfg.pv.moduleVmp_STC_V must be positive.');
+    end
+
+    if pvPars.V_oc_stc_V <= pvPars.V_mpp_stc_V
+        error('cfg.pv.moduleVoc_STC_V must be larger than cfg.pv.moduleVmp_STC_V.');
+    end
+
+    if pvPars.NOCT_C <= 0
+        error('cfg.pv.NOCT_C must be positive.');
+    end
+
+    if pvPars.G_ref_Wm2 <= 0
+        error('cfg.pv.Gref_Wm2 must be positive.');
+    end
+
+    if pvPars.G_min_for_voltage_Wm2 <= 0
+        error('cfg.pv.GminVoltage_Wm2 must be positive.');
+    end
+
+    if pvPars.vmp_irr_factor_min <= 0 || ...
+            pvPars.vmp_irr_factor_max <= 0 || ...
+            pvPars.vmp_irr_factor_min >= pvPars.vmp_irr_factor_max
+
+        error('Invalid Vmpp irradiance factor limits in cfg.pv.');
+    end
 end

@@ -129,32 +129,31 @@ function cfg = create_configurations(basePath)
     cfg.dcBus.weightBessDcdc = 0.20;
 
     % ---------------------------------------------------------------------
-    % PV module and string configuration - 1000 V class system
+    % PV module datasheet parameters
     % ---------------------------------------------------------------------
-    cfg.pv.modulePower_kWp = 0.715;
-    cfg.pv.validateStringVoc = true;
+    cfg.pv.modulePower_kWp = 0.450;              % Pmpp,STC [kWp]
+    cfg.pv.moduleArea_m2 = 2.17;                 % module area [m2]
 
-    % Modul adatlapbol:
-    cfg.pv.moduleVoc_STC_V = 49.5;              % peldaertek, datasheet alapjan cserelni
-    cfg.pv.moduleVocTempCoeff_per_C = -0.0025; % relativ 1/C, pl. -0.25 %/C = -0.0025 1/C
+    cfg.pv.moduleVmp_STC_V = 30.25;               % Vmpp,STC [V]
+    cfg.pv.moduleVoc_STC_V = 36.04;               % Voc,STC [V]
 
-    % Helyszin / tervezesi minimum cellahomerseklet:
-    cfg.pv.minCellTemp_C = -10;
-    
-    % PV-direct esetben ez legyen az inverter/DC busz max.
-    % MPPT DC/DC-s esetben ez inkabb cfg.mpptDcdc.VinMax_V.
-    cfg.pv.maxStringVoltage_V = 1000;
+    cfg.pv.powerTempCoeff_per_C = -0.0029;       % gamma_Pmpp [1/C]
+    cfg.pv.vmpTempCoeff_per_C = -0.0028;         % beta_Vmpp [1/C]
+    cfg.pv.moduleVocTempCoeff_per_C = -0.0025;   % beta_Voc [1/C]
 
-    % 1000 V-os rendszerhez nem celszeru a string MPP feszultseget
-    % tul kozel vinni az 1000 V-os maximumhoz.
-    %
-    % Tipikus nagy teljesitmenyu modulnal:
-    %   V_mpp_module ~= 41...42 V
-    %   20 modul sorban ~= 820...840 V string MPP
-    cfg.pv.Ns = 18;
+    cfg.pv.NOCT_C = 43.7;
 
-    cfg.pv.enforceIntegerStrings = true;
-    cfg.pv.stringRoundingMode = "round";
+    cfg.pv.Gref_Wm2 = 1000;
+    cfg.pv.GminVoltage_Wm2 = 50;
+
+    cfg.pv.vmpIrrLogCoeff = 0.025;
+    cfg.pv.vmpIrrFactorMin = 0.85;
+    cfg.pv.vmpIrrFactorMax = 1.05;
+    cfg.pv.vmpTempFactorMin = 0.70;
+
+    cfg.pv.useBifacial = false;
+    cfg.pv.bifacialFactor = 0.85;
+    cfg.pv.groundAlbedo = 0.20;
 
         % ---------------------------------------------------------------------
     % PV MPPT DC/DC converter model - 1000 V class DC optimizer
@@ -288,8 +287,10 @@ function cfg = create_configurations(basePath)
     % ---------------------------------------------------------------------
     cfg.diagnostics.enabled = true;
     cfg.diagnostics.testMode = false;
-    cfg.diagnostics.candidateIndex = 1;
+    cfg.diagnostics.candidateIndex = 11;
     cfg.diagnostics.coupling = "dc";
+
+    cfg.production.targetStepMin = 15;
 
     cfg.diagnostics.outputFolder = fullfile(cfg.paths.results, 'diagnostics');
     
@@ -344,12 +345,12 @@ function cfg = create_configurations(basePath)
     cfg.pv.tiltX = 35;
     cfg.pv.tiltZ = 180;
     cfg.pv.referencePdc_kWp = 1.0;
-    cfg.pv.modulePower_kWp = 0.5;
+    %cfg.pv.modulePower_kWp = 0.5;
     % ---------------------------------------------------------------------
     % PV module and string configuration
     % ---------------------------------------------------------------------
-    cfg.pv.modulePower_kWp = 0.715;
-    cfg.pv.Ns = 24;
+    %cfg.pv.modulePower_kWp = 0.715;
+    %cfg.pv.Ns = 24;
 
     % If false:
     %   the parameter sweep keeps the exact requested PV size.

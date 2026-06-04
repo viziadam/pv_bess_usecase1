@@ -256,10 +256,10 @@ function pvGroups = local_build_pv_mppt_groups(dayInput, design, cfg, N)
 
     rawGroups = dayInput.pvGroups;
 
-    Ns = local_get_pv_series_modules(design, cfg);
-    modulePower_kWp = local_get_module_power_kWp(cfg, rawGroups);
+    modulePower_kWp = local_get_module_power_kWp(cfg);
+    stringDesign = local_get_pv_string_design(cfg);
 
-    local_validate_pv_string_sizing_from_cfg(cfg, Ns);
+    Ns = stringDesign.Ns;
 
     scaleFactor = local_get_reference_scale_factor(dayInput, design, cfg);
 
@@ -274,6 +274,10 @@ function pvGroups = local_build_pv_mppt_groups(dayInput, design, cfg, N)
         'Pdc_installed_kWp', [], ...
         'modulePower_kWp', modulePower_kWp, ...
         'Ns', Ns, ...
+        'NsMaxVoc', stringDesign.NsMaxVoc, ...
+        'VocColdModule_V', stringDesign.VocColdModule_V, ...
+        'VocColdString_V', stringDesign.VocColdString_V, ...
+        'maxStringVoltage_V', stringDesign.maxStringVoltage_V, ...
         'Np', [], ...
         'N_modules', [], ...
         'N_modules_ref', [], ...
@@ -430,62 +434,106 @@ function P_total_kW = local_sum_pv_group_power(pvGroups, N)
 end
 
 
-function Ns = local_get_pv_series_modules(design, cfg)
+function stringDesign = local_get_pv_string_design(cfg)
 
-    Ns = [];
-
-    if isfield(cfg, 'pv') && isfield(cfg.pv, 'Ns')
-        Ns = cfg.pv.Ns;
-
-    elseif isfield(cfg, 'pv') && isfield(cfg.pv, 'N_series')
-        Ns = cfg.pv.N_series;
-
-    elseif isfield(design, 'Ns')
-        Ns = design.Ns;
-
-    elseif isfield(design, 'N_series')
-        Ns = design.N_series;
+    if ~isfield(cfg, 'pv')
+        error('cfg.pv is missing.');
     end
 
-    if isempty(Ns) || ~isnumeric(Ns) || ~isscalar(Ns) || ...
-            ~isfinite(Ns) || Ns <= 0
+    sizingMode = "auto_voc_max";
 
-        error(['Missing or invalid PV series module count. ', ...
-               'Set cfg.pv.Ns explicitly.']);
+    if isfield(cfg.pv, 'stringSizingMode') && ~isempty(cfg.pv.stringSizingMode)
+        sizingMode = lower(string(cfg.pv.stringSizingMode));
     end
 
-    NsRounded = round(Ns);
+    Voc_STC = local_get_required_numeric_cfg(cfg, {'pv', 'moduleVoc_STC_V'});
+    betaVoc = local_get_required_numeric_cfg(cfg, {'pv', 'moduleVocTempCoeff_per_C'});
+    Tmin = local_get_required_numeric_cfg(cfg, {'pv', 'minCellTemp_C'});
+    Vmax = local_get_pv_max_string_voltage_from_cfg(cfg);
 
-    if abs(NsRounded - Ns) > 1e-9
-        error('cfg.pv.Ns must be an integer number of modules in series.');
+    if Voc_STC <= 0
+        error('cfg.pv.moduleVoc_STC_V must be positive.');
     end
 
-    Ns = NsRounded;
+    if Vmax <= 0
+        error('PV maximum string voltage must be positive.');
+    end
+
+    VocColdModule_V = Voc_STC * (1 + betaVoc * (Tmin - 25));
+
+    if ~isfinite(VocColdModule_V) || VocColdModule_V <= 0
+        error(['Calculated cold module Voc is invalid. ', ...
+               'Check cfg.pv.moduleVoc_STC_V, cfg.pv.moduleVocTempCoeff_per_C and cfg.pv.minCellTemp_C.']);
+    end
+
+    NsMaxVoc = floor(Vmax / VocColdModule_V);
+
+    if NsMaxVoc < 1
+        error(['No valid PV string length is possible. ', ...
+               'Cold module Voc = %.3f V, maximum string voltage = %.3f V.'], ...
+               VocColdModule_V, Vmax);
+    end
+
+    switch sizingMode
+
+        case {"auto", "auto_voc", "auto_voc_max"}
+
+            Ns = NsMaxVoc;
+
+        case "manual"
+
+            if ~isfield(cfg.pv, 'Ns') || isempty(cfg.pv.Ns) || ...
+                    ~isnumeric(cfg.pv.Ns) || ~isscalar(cfg.pv.Ns) || ...
+                    ~isfinite(cfg.pv.Ns) || cfg.pv.Ns <= 0
+
+                error('Manual PV string sizing requires a valid cfg.pv.Ns.');
+            end
+
+            Ns = round(cfg.pv.Ns);
+
+            if abs(Ns - cfg.pv.Ns) > 1e-9
+                error('cfg.pv.Ns must be an integer in manual string sizing mode.');
+            end
+
+            if Ns > NsMaxVoc
+                error(['Manual PV string sizing is invalid. ', ...
+                       'cfg.pv.Ns = %d gives cold string Voc = %.3f V, ', ...
+                       'while max allowed string voltage is %.3f V. ', ...
+                       'Maximum allowed Ns from cold Voc is %d.'], ...
+                       Ns, ...
+                       Ns * VocColdModule_V, ...
+                       Vmax, ...
+                       NsMaxVoc);
+            end
+
+        otherwise
+
+            error('Unknown cfg.pv.stringSizingMode: %s', sizingMode);
+    end
+
+    stringDesign = struct();
+    stringDesign.Ns = Ns;
+    stringDesign.NsMaxVoc = NsMaxVoc;
+    stringDesign.VocColdModule_V = VocColdModule_V;
+    stringDesign.VocColdString_V = Ns * VocColdModule_V;
+    stringDesign.maxStringVoltage_V = Vmax;
+    stringDesign.stringSizingMode = sizingMode;
 end
 
+function modulePower_kWp = local_get_module_power_kWp(cfg)
 
-function modulePower_kWp = local_get_module_power_kWp(cfg, rawGroups)
+    if ~isfield(cfg, 'pv') || ...
+            ~isfield(cfg.pv, 'modulePower_kWp') || ...
+            isempty(cfg.pv.modulePower_kWp) || ...
+            ~isnumeric(cfg.pv.modulePower_kWp) || ...
+            ~isscalar(cfg.pv.modulePower_kWp) || ...
+            ~isfinite(cfg.pv.modulePower_kWp) || ...
+            cfg.pv.modulePower_kWp <= 0
 
-    modulePower_kWp = [];
-
-    if isfield(cfg, 'pv') && isfield(cfg.pv, 'modulePower_kWp')
-        modulePower_kWp = cfg.pv.modulePower_kWp;
+        error('Missing or invalid cfg.pv.modulePower_kWp.');
     end
 
-    if isempty(modulePower_kWp) && ~isempty(rawGroups) && ...
-            isfield(rawGroups(1), 'modulePower_kWp') && ...
-            ~isempty(rawGroups(1).modulePower_kWp)
-
-        modulePower_kWp = rawGroups(1).modulePower_kWp;
-    end
-
-    if isempty(modulePower_kWp) || ~isnumeric(modulePower_kWp) || ...
-            ~isscalar(modulePower_kWp) || ~isfinite(modulePower_kWp) || ...
-            modulePower_kWp <= 0
-
-        error(['Missing or invalid PV module power. ', ...
-               'Set cfg.pv.modulePower_kWp explicitly.']);
-    end
+    modulePower_kWp = cfg.pv.modulePower_kWp;
 end
 
 
@@ -591,50 +639,72 @@ function y = local_fit_vector(x, N, fillValue)
     end
 end
 
-function local_validate_pv_string_sizing_from_cfg(cfg, Ns)
 
-    if ~isfield(cfg, 'pv') || ...
-            ~isfield(cfg.pv, 'validateStringVoc') || ...
-            ~cfg.pv.validateStringVoc
 
-        return;
-    end
+function value = local_get_required_numeric_cfg(cfg, path)
 
-    requiredFields = { ...
-        'moduleVoc_STC_V', ...
-        'moduleVocTempCoeff_per_C', ...
-        'minCellTemp_C', ...
-        'maxStringVoltage_V'};
+    candidate = cfg;
 
-    for k = 1:numel(requiredFields)
-        fieldName = requiredFields{k};
+    for k = 1:numel(path)
 
-        if ~isfield(cfg.pv, fieldName) || isempty(cfg.pv.(fieldName)) || ...
-                ~isnumeric(cfg.pv.(fieldName)) || ~isscalar(cfg.pv.(fieldName)) || ...
-                ~isfinite(cfg.pv.(fieldName))
+        fieldName = path{k};
 
-            error('Missing or invalid cfg.pv.%s for Voc-based string validation.', fieldName);
+        if ~isstruct(candidate) || ~isfield(candidate, fieldName)
+            error('Missing configuration field: cfg.%s', strjoin(path, '.'));
         end
+
+        candidate = candidate.(fieldName);
     end
 
-    Voc_STC = cfg.pv.moduleVoc_STC_V;
-    betaVoc = cfg.pv.moduleVocTempCoeff_per_C;
-    Tmin = cfg.pv.minCellTemp_C;
-    Vmax = cfg.pv.maxStringVoltage_V;
-
-    Voc_cold_module = Voc_STC * (1 + betaVoc * (Tmin - 25));
-    Voc_cold_string = Ns * Voc_cold_module;
-
-    if Voc_cold_module <= 0
-        error('Calculated cold module Voc is invalid. Check cfg.pv.moduleVoc_STC_V and beta coefficient.');
+    if isempty(candidate) || ~isnumeric(candidate) || ~isscalar(candidate) || ~isfinite(candidate)
+        error('Invalid numeric configuration field: cfg.%s', strjoin(path, '.'));
     end
 
-    NsMax = floor(Vmax / Voc_cold_module);
+    value = candidate;
+end
 
-    if Voc_cold_string > Vmax
-        error(['PV string voltage design is invalid. ', ...
-               'Ns = %d gives cold string Voc = %.3f V, while max allowed string voltage is %.3f V. ', ...
-               'Maximum allowed Ns from cold Voc is %d.'], ...
-               Ns, Voc_cold_string, Vmax, NsMax);
+function Vmax = local_get_pv_max_string_voltage_from_cfg(cfg)
+
+    usePvMpptDcdc = true;
+
+    if isfield(cfg, 'mpptDcdc') && isfield(cfg.mpptDcdc, 'enabled')
+        usePvMpptDcdc = logical(cfg.mpptDcdc.enabled);
+    end
+
+    Vmax = [];
+
+    % Explicit PV string design limit has highest priority.
+    if isfield(cfg, 'pv') && isfield(cfg.pv, 'maxStringVoltage_V') && ...
+            ~isempty(cfg.pv.maxStringVoltage_V)
+
+        Vmax = cfg.pv.maxStringVoltage_V;
+    end
+
+    % If PV-side MPPT DC/DC is used, the string is connected to the MPPT
+    % converter input, therefore its input voltage window is relevant.
+    if isempty(Vmax) && usePvMpptDcdc && ...
+            isfield(cfg, 'mpptDcdc') && isfield(cfg.mpptDcdc, 'VinMax_V')
+
+        Vmax = cfg.mpptDcdc.VinMax_V;
+    end
+
+    % If PV-direct mode is used, the string is connected to the inverter/DC bus.
+    if isempty(Vmax) && ~usePvMpptDcdc && ...
+            isfield(cfg, 'inverter') && isfield(cfg.inverter, 'VdcMax_V')
+
+        Vmax = cfg.inverter.VdcMax_V;
+    end
+
+    % Generic DC bus maximum, if defined.
+    if isempty(Vmax) && isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'V_max_V')
+        Vmax = cfg.dcBus.V_max_V;
+    end
+
+    if isempty(Vmax) || ~isnumeric(Vmax) || ~isscalar(Vmax) || ...
+            ~isfinite(Vmax) || Vmax <= 0
+
+        error(['Missing or invalid maximum PV string voltage. ', ...
+               'Set cfg.pv.maxStringVoltage_V, or define the relevant ', ...
+               'cfg.mpptDcdc.VinMax_V / cfg.inverter.VdcMax_V limit.']);
     end
 end

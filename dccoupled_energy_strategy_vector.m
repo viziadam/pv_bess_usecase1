@@ -1169,33 +1169,6 @@ function [V_dc_link_V, V_dc_link_unclamped_V, dcBusVoltageClamped] = ...
     end
 end
 
-function V_backup = local_get_no_mppt_backup_voltage(cfg, design)
-
-    V_backup = [];
-
-    if isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'noMpptBackup_V')
-        V_backup = cfg.dcBus.noMpptBackup_V;
-    elseif isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'noMpptFallback_V')
-        V_backup = cfg.dcBus.noMpptFallback_V;
-    elseif isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'V_ref_V')
-        V_backup = cfg.dcBus.V_ref_V;
-    elseif isfield(cfg, 'dc') && isfield(cfg.dc, 'V_dc_link_ref_V')
-        V_backup = cfg.dc.V_dc_link_ref_V;
-    elseif isfield(design, 'V_dc_link_V')
-        V_backup = design.V_dc_link_V;
-    elseif isfield(design, 'V_dc_link_ref_V')
-        V_backup = design.V_dc_link_ref_V;
-    else
-        error(['No backup DC-link voltage is defined for PV-direct mode. ', ...
-               'Set cfg.dcBus.noMpptBackup_V for zero-PV periods.']);
-    end
-
-    if isempty(V_backup) || ~isnumeric(V_backup) || ~isscalar(V_backup) || ...
-            ~isfinite(V_backup) || V_backup <= 0
-
-        error('Invalid backup DC-link voltage for PV-direct mode.');
-    end
-end
 
 function [V_min, V_max] = local_get_dc_link_allowed_window(cfg)
 
