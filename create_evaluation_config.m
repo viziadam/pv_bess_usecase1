@@ -107,6 +107,10 @@ function evalCfg = create_evaluation_config(cfg)
     % true  -> minden megadott metrikát rajzol
     evalCfg.plots.showAllMetrics = false;
 
+    evalCfg.economics.bessLifetime_years = 15;
+    evalCfg.economics.bessEolSohLoss = 0.20;
+    evalCfg.economics.includeResidualValue = true;
+
     % ---------------------------------------------------------------------
     % 3) Legjobb rendszer kiválasztása
     % ---------------------------------------------------------------------

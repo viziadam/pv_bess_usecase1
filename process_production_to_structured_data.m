@@ -483,16 +483,16 @@ function create_daily_production_buffer(P_stc, year, month, day, tminVec, GHI_ve
 
     numComb = length(tiltsX) * length(tiltsZ);
 
-    resultsTable = table('Size', [numComb, 3], ...
-        'VariableTypes', {'double', 'double', 'cell'}, ...
-        'VariableNames', {'tiltX', 'tiltZ', 'tPDC'});
+    resultsTable = table('Size', [numComb, 4], ...
+        'VariableTypes', {'double', 'double', 'cell', 'cell'}, ...
+        'VariableNames', {'tiltX', 'tiltZ', 'tPDC', 'tVMPP'});
 
     rowIdx = 1;
 
     for tx = tiltsX
         for tz = tiltsZ
 
-            P_dc_daily = pv_module_model( ...
+            [P_dc_daily, V_mpp_daily] = pv_module_model( ...
                 P_stc, ...
                 tminVec, ...
                 GHI_vec, ...
@@ -504,9 +504,21 @@ function create_daily_production_buffer(P_stc, year, month, day, tminVec, GHI_ve
                 tx, ...
                 tz);
 
+            P_dc_daily = P_dc_daily(:).';
+            V_mpp_daily = V_mpp_daily(:).';
+
+            if numel(P_dc_daily) ~= numel(tminVec)
+                error('P_dc_daily hossza nem egyezik a tminVec hosszaval.');
+            end
+
+            if numel(V_mpp_daily) ~= numel(tminVec)
+                error('V_mpp_daily hossza nem egyezik a tminVec hosszaval.');
+            end
+
             resultsTable.tiltX(rowIdx) = tx;
             resultsTable.tiltZ(rowIdx) = tz;
             resultsTable.tPDC{rowIdx}  = P_dc_daily;
+            resultsTable.tVMPP{rowIdx} = V_mpp_daily;
 
             rowIdx = rowIdx + 1;
         end
@@ -540,6 +552,13 @@ function create_daily_production_buffer(P_stc, year, month, day, tminVec, GHI_ve
 
     resultBuffer.temperatureData = struct( ...
         'Tamb', Tamb_vec);
+
+    resultBuffer.electricalData = struct( ...
+    'powerField', 'tPDC', ...
+    'voltageField', 'tVMPP', ...
+    'voltageMeaning', 'PV module MPP voltage for the given orientation', ...
+    'powerUnit', 'W', ...
+    'voltageUnit', 'V');
 
     resultBuffer.windSpeedData = struct();
 

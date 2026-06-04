@@ -832,9 +832,148 @@ end
 % =========================================================================
 % ABRAZOLAS
 % =========================================================================
+% function local_plot_results(analysisResult, cfg, figurePath)
+% 
+%     M = analysisResult.monthlyTable;
+%     MP = analysisResult.monthlyProfiles;
+%     WP = analysisResult.weekdayProfiles;
+%     IS = analysisResult.inverterSizing;
+% 
+%     time_h = analysisResult.summary.time_h;
+% 
+%     xTicks = 0:6:24;
+%     xTickLabels = {'00:00', '06:00', '12:00', '18:00', '24:00'};
+% 
+%     % ---------------------------------------------------------------------
+%     % 1) Havi atlagos napon beluli fogyasztasi gorbek
+%     % ---------------------------------------------------------------------
+%     fig1 = figure('Name', 'Havi atlagos napon beluli fogyasztasi gorbek', ...
+%         'Color', 'w', ...
+%         'Position', [100, 100, 1050, 520]);
+% 
+%     hold on;
+%     grid on;
+% 
+%     for m = 1:12
+%         if MP.nDays(m) > 0
+%             plot(time_h, MP.loadMean_kW(m, :), ...
+%                 'LineWidth', 1.1, ...
+%                 'DisplayName', MP.monthNames(m));
+%         end
+%     end
+% 
+%     xlabel('Idő');
+%     ylabel('Teljesítmény [kW]');
+%     title('Havi átlagos napon belüli fogyasztási görbék');
+%     xlim([0 24]);
+%     xticks(xTicks);
+%     xticklabels(xTickLabels);
+%     legend('Location', 'eastoutside');
+% 
+%     saveas(fig1, fullfile(figurePath, '01_havi_atlagos_napon_beluli_fogyasztasi_gorbek.png'));
+% 
+%     % ---------------------------------------------------------------------
+%     % 2) Havi fogyasztas vs PV termeles es felhasznalt energia
+%     % ---------------------------------------------------------------------
+%     fig2 = figure('Name', 'Havi energiafelhasznalas vs PV termeles', ...
+%         'Color', 'w', ...
+%         'Position', [120, 120, 1050, 560]);
+% 
+%     monthIdx = 1:12;
+% 
+%     hold on;
+%     grid on;
+% 
+%     area(monthIdx, M.PVEnergy_kWh, ...
+%         'FaceAlpha', 0.25, ...
+%         'DisplayName', 'Össztermelés');
+% 
+%     area(monthIdx, M.DirectPVUse_kWh, ...
+%         'FaceAlpha', 0.45, ...
+%         'DisplayName', 'Közvetlenül felhasznált PV energia');
+% 
+%     bar(monthIdx, M.LoadEnergy_kWh, ...
+%         0.55, ...
+%         'FaceAlpha', 0.70, ...
+%         'DisplayName', 'Fogyasztás');
+% 
+%     xlabel('Hónap');
+%     ylabel('Energia [kWh]');
+%     title(sprintf('%.0f kWp-es rendszer termelésének közvetlen illeszkedése a fogyasztáshoz', ...
+%         cfg.analysis.PV_kW_forAnalysis));
+% 
+%     xticks(monthIdx);
+%     xticklabels(M.MonthName);
+%     xtickangle(45);
+% 
+%     legend('Location', 'best');
+% 
+%     saveas(fig2, fullfile(figurePath, '02_havi_energiafelhasznalas_vs_pv_termeles.png'));
+% 
+%     % ---------------------------------------------------------------------
+%     % 3) Heti napok szerinti napi atlagos fogyasztasi gorbek
+%     % ---------------------------------------------------------------------
+%     fig3 = figure('Name', 'Napi atlagos fogyasztasi gorbek a het kulonbozo napjain', ...
+%         'Color', 'w', ...
+%         'Position', [140, 140, 1050, 520]);
+% 
+%     hold on;
+%     grid on;
+% 
+%     for i = 1:7
+%         if WP.nDays(i) > 0
+%             plot(time_h, WP.loadMean_kW(i, :), ...
+%                 'LineWidth', 1.25, ...
+%                 'DisplayName', WP.weekdayNames(i));
+%         end
+%     end
+% 
+%     xlabel('Idő');
+%     ylabel('Teljesítmény [kW]');
+%     title('Heti napok szerinti átlagos fogyasztási görbék');
+%     xlim([0 24]);
+%     xticks(xTicks);
+%     xticklabels(xTickLabels);
+%     legend('Location', 'eastoutside');
+% 
+%     saveas(fig3, fullfile(figurePath, '03_heti_napok_atlagos_fogyasztasi_gorbei.png'));
+% 
+%     % ---------------------------------------------------------------------
+%     % 4) Napi fogyasztasi csucsteljesitmeny hisztogram inverter meretezeshez
+%     % ---------------------------------------------------------------------
+%     fig4 = figure('Name', 'Napi fogyasztasi csucs hisztogram inverter meretezeshez', ...
+%         'Color', 'w', ...
+%         'Position', [160, 160, 1050, 560]);
+% 
+%     hold on;
+%     grid on;
+% 
+%     H = IS.histogramTable;
+%     C = IS.candidateTable;
+% 
+%     bar(H.BinCenter_kW, H.Count, 1.0, ...
+%         'FaceAlpha', 0.70, ...
+%         'DisplayName', 'Napi fogyasztási csúcsteljesítmény');
+% 
+%     for i = 1:height(C)
+% 
+%         xline(C.SuggestedInverter_kW(i), '--', ...
+%             sprintf('P%.1f -> %.0f kW', C.BasisPercentile(i), C.SuggestedInverter_kW(i)), ...
+%             'LineWidth', 1.2, ...
+%             'LabelOrientation', 'horizontal', ...
+%             'HandleVisibility', 'off');
+%     end
+% 
+%     xlabel('Napi fogyasztási csúcsteljesítmény [kW]');
+%     ylabel('Napok száma');
+%     title('Napi fogyasztási csúcsteljesítmények és percentilis alapú inverterméretezés');
+%     legend('Location', 'best');
+% 
+%     saveas(fig4, fullfile(figurePath, '04_napi_fogyasztasi_csucs_hisztogram_inverter_meretezeshez.png'));
+% end
+
 function local_plot_results(analysisResult, cfg, figurePath)
 
-    M = analysisResult.monthlyTable;
     MP = analysisResult.monthlyProfiles;
     WP = analysisResult.weekdayProfiles;
     IS = analysisResult.inverterSizing;
@@ -844,130 +983,122 @@ function local_plot_results(analysisResult, cfg, figurePath)
     xTicks = 0:6:24;
     xTickLabels = {'00:00', '06:00', '12:00', '18:00', '24:00'};
 
+    if ~exist(figurePath, 'dir')
+        mkdir(figurePath);
+    end
+
+    % ---------------------------------------------------------------------
+    % Osszefoglalo abra:
+    %   1) havi atlagos napon beluli fogyasztasi gorbek
+    %   2) het napjai szerinti atlagos fogyasztasi gorbek
+    %   3) napi fogyasztasi csucsteljesitmeny hisztogram percentilisekkel
+    %
+    % Az oszlopos havi fogyasztas/PV termeles abra szandekosan nincs benne.
+    % ---------------------------------------------------------------------
+    fig = figure('Name', 'Fogyasztasi profilok es napi csucsteljesitmenyek osszefoglalasa', ...
+        'Color', 'w', ...
+        'Position', [80, 80, 1450, 950]);
+
+    tiledlayout(fig, 2, 2, ...
+        'TileSpacing', 'compact', ...
+        'Padding', 'compact');
+
     % ---------------------------------------------------------------------
     % 1) Havi atlagos napon beluli fogyasztasi gorbek
     % ---------------------------------------------------------------------
-    fig1 = figure('Name', 'Havi atlagos napon beluli fogyasztasi gorbek', ...
-        'Color', 'w', ...
-        'Position', [100, 100, 1050, 520]);
-
-    hold on;
-    grid on;
+    ax1 = nexttile(1);
+    hold(ax1, 'on');
+    grid(ax1, 'on');
+    box(ax1, 'on');
 
     for m = 1:12
         if MP.nDays(m) > 0
-            plot(time_h, MP.loadMean_kW(m, :), ...
+            plot(ax1, time_h, MP.loadMean_kW(m, :), ...
                 'LineWidth', 1.1, ...
                 'DisplayName', MP.monthNames(m));
         end
     end
 
-    xlabel('Idő');
-    ylabel('Teljesítmény [kW]');
-    title('Havi átlagos napon belüli fogyasztási görbék');
-    xlim([0 24]);
-    xticks(xTicks);
-    xticklabels(xTickLabels);
-    legend('Location', 'eastoutside');
+    xlabel(ax1, 'Idő');
+    ylabel(ax1, 'Teljesítmény [kW]');
+    title(ax1, 'Havi átlagos napon belüli fogyasztási görbék');
 
-    saveas(fig1, fullfile(figurePath, '01_havi_atlagos_napon_beluli_fogyasztasi_gorbek.png'));
+    xlim(ax1, [0 24]);
+    xticks(ax1, xTicks);
+    xticklabels(ax1, xTickLabels);
 
-    % ---------------------------------------------------------------------
-    % 2) Havi fogyasztas vs PV termeles es felhasznalt energia
-    % ---------------------------------------------------------------------
-    fig2 = figure('Name', 'Havi energiafelhasznalas vs PV termeles', ...
-        'Color', 'w', ...
-        'Position', [120, 120, 1050, 560]);
-
-    monthIdx = 1:12;
-
-    hold on;
-    grid on;
-
-    area(monthIdx, M.PVEnergy_kWh, ...
-        'FaceAlpha', 0.25, ...
-        'DisplayName', 'Össztermelés');
-
-    area(monthIdx, M.DirectPVUse_kWh, ...
-        'FaceAlpha', 0.45, ...
-        'DisplayName', 'Közvetlenül felhasznált PV energia');
-
-    bar(monthIdx, M.LoadEnergy_kWh, ...
-        0.55, ...
-        'FaceAlpha', 0.70, ...
-        'DisplayName', 'Fogyasztás');
-
-    xlabel('Hónap');
-    ylabel('Energia [kWh]');
-    title(sprintf('%.0f kWp-es rendszer termelésének közvetlen illeszkedése a fogyasztáshoz', ...
-        cfg.analysis.PV_kW_forAnalysis));
-
-    xticks(monthIdx);
-    xticklabels(M.MonthName);
-    xtickangle(45);
-
-    legend('Location', 'best');
-
-    saveas(fig2, fullfile(figurePath, '02_havi_energiafelhasznalas_vs_pv_termeles.png'));
+    legend(ax1, 'Location', 'eastoutside');
 
     % ---------------------------------------------------------------------
-    % 3) Heti napok szerinti napi atlagos fogyasztasi gorbek
+    % 2) Heti napok szerinti napi atlagos fogyasztasi gorbek
     % ---------------------------------------------------------------------
-    fig3 = figure('Name', 'Napi atlagos fogyasztasi gorbek a het kulonbozo napjain', ...
-        'Color', 'w', ...
-        'Position', [140, 140, 1050, 520]);
-
-    hold on;
-    grid on;
+    ax2 = nexttile(2);
+    hold(ax2, 'on');
+    grid(ax2, 'on');
+    box(ax2, 'on');
 
     for i = 1:7
         if WP.nDays(i) > 0
-            plot(time_h, WP.loadMean_kW(i, :), ...
+            plot(ax2, time_h, WP.loadMean_kW(i, :), ...
                 'LineWidth', 1.25, ...
                 'DisplayName', WP.weekdayNames(i));
         end
     end
 
-    xlabel('Idő');
-    ylabel('Teljesítmény [kW]');
-    title('Heti napok szerinti átlagos fogyasztási görbék');
-    xlim([0 24]);
-    xticks(xTicks);
-    xticklabels(xTickLabels);
-    legend('Location', 'eastoutside');
+    xlabel(ax2, 'Idő');
+    ylabel(ax2, 'Teljesítmény [kW]');
+    title(ax2, 'Heti napok szerinti átlagos fogyasztási görbék');
 
-    saveas(fig3, fullfile(figurePath, '03_heti_napok_atlagos_fogyasztasi_gorbei.png'));
+    xlim(ax2, [0 24]);
+    xticks(ax2, xTicks);
+    xticklabels(ax2, xTickLabels);
+
+    legend(ax2, 'Location', 'eastoutside');
 
     % ---------------------------------------------------------------------
-    % 4) Napi fogyasztasi csucsteljesitmeny hisztogram inverter meretezeshez
+    % 3) Napi fogyasztasi csucsteljesitmeny hisztogram percentilisekkel
     % ---------------------------------------------------------------------
-    fig4 = figure('Name', 'Napi fogyasztasi csucs hisztogram inverter meretezeshez', ...
-        'Color', 'w', ...
-        'Position', [160, 160, 1050, 560]);
-
-    hold on;
-    grid on;
+    ax3 = nexttile([1 2]);
+    hold(ax3, 'on');
+    grid(ax3, 'on');
+    box(ax3, 'on');
 
     H = IS.histogramTable;
     C = IS.candidateTable;
 
-    bar(H.BinCenter_kW, H.Count, 1.0, ...
+    bar(ax3, H.BinCenter_kW, H.Count, 1.0, ...
         'FaceAlpha', 0.70, ...
         'DisplayName', 'Napi fogyasztási csúcsteljesítmény');
 
     for i = 1:height(C)
 
-        xline(C.SuggestedInverter_kW(i), '--', ...
-            sprintf('P%.1f -> %.0f kW', C.BasisPercentile(i), C.SuggestedInverter_kW(i)), ...
+        xVal = C.SuggestedInverter_kW(i);
+        pVal = C.BasisPercentile(i);
+
+        xline(ax3, xVal, '--', ...
+            sprintf('P%.1f = %.0f kW', pVal, xVal), ...
             'LineWidth', 1.2, ...
             'LabelOrientation', 'horizontal', ...
+            'LabelVerticalAlignment', 'middle', ...
             'HandleVisibility', 'off');
     end
 
-    xlabel('Napi fogyasztási csúcsteljesítmény [kW]');
-    ylabel('Napok száma');
-    title('Napi fogyasztási csúcsteljesítmények és percentilis alapú inverterméretezés');
-    legend('Location', 'best');
+    xlabel(ax3, 'Napi fogyasztási csúcsteljesítmény [kW]');
+    ylabel(ax3, 'Napok száma');
+    title(ax3, 'Napi fogyasztási csúcsteljesítmények és percentilis alapú inverterméretezés');
 
-    saveas(fig4, fullfile(figurePath, '04_napi_fogyasztasi_csucs_hisztogram_inverter_meretezeshez.png'));
+    legend(ax3, 'Location', 'best');
+
+    % ---------------------------------------------------------------------
+    % Kozos cim es mentes
+    % ---------------------------------------------------------------------
+    sgtitle(fig, sprintf('Fogyasztási profilok összefoglalása és inverterméretezés napi csúcsok alapján'));
+
+    savefig(fig, fullfile(figurePath, 'summary.fig'));
+
+    try
+        exportgraphics(fig, fullfile(figurePath, 'summary.png'), 'Resolution', 200);
+    catch
+        saveas(fig, fullfile(figurePath, 'summary.png'));
+    end
 end

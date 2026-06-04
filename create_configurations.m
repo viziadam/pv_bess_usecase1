@@ -36,7 +36,7 @@ function cfg = create_configurations(basePath)
     cfg.analysis.simYears = 4;
     
     %lifetime years and discount rate
-    cfg.cost.project_lifetime_years = 20;
+    cfg.cost.project_lifetime_years = 15;
     cfg.cost.pv_lifetime_years = 25;
     cfg.cost.inverter_lifetime_years = 15;
     cfg.cost.discount_rate = 0.06;
@@ -44,11 +44,11 @@ function cfg = create_configurations(basePath)
     %Costs
     cfg.cost.eur_to_huf = 350;
     % cfg.cost.pv_huf_per_kWp = cfg.cost.eur_to_huf*500;
-    cfg.cost.bess_huf_per_kWh = cfg.cost.eur_to_huf * 220;
+    cfg.cost.bess_huf_per_kWh = cfg.cost.eur_to_huf * 280;
     cfg.cost.pv_huf_per_kWp = 300000;
     %cfg.cost.bess_huf_per_kWh = 80000;
     cfg.cost.bess_power_huf_per_kW = 0;
-    cfg.cost.inverter_huf_per_kW = 40000;
+    cfg.cost.inverter_huf_per_kW = 50000;
 
     cfg.cost.pv_opex_frac_per_year = 0.015;
     cfg.cost.bess_opex_frac_per_year = 0.020;
@@ -105,12 +105,195 @@ function cfg = create_configurations(basePath)
     cfg.candidates.bessDuration_h = 2;
 
     % ---------------------------------------------------------------------
+    % DC bus configuration
+    % ---------------------------------------------------------------------
+    % The DC bus is treated as a regulated stiff DC-link.
+    %
+    % controlMode:
+    %   "fixed"        : use cfg.dcBus.V_ref_V
+    %   "auto_optimal" : select the DC bus voltage from a candidate vector
+    %                    based on inverter, PV DC/DC and BESS DC/DC criteria.
+    cfg.dcBus.controlMode = "auto_optimal";
+
+    % Fallback / fixed value
+    cfg.dcBus.V_ref_V = 1000;
+
+    % Candidate range for automatic DC-link voltage selection
+    cfg.dcBus.V_candidate_vec_V = 700:25:1200;
+
+    % Inverter preferred DC-link voltage
+    cfg.dcBus.inverterPreferred_V = 1000;
+
+    % Weights in the automatic DC bus selection objective
+    cfg.dcBus.weightInverter = 0.50;
+    cfg.dcBus.weightPvDcdc = 0.30;
+    cfg.dcBus.weightBessDcdc = 0.20;
+
+    % ---------------------------------------------------------------------
+    % PV string configuration
+    % ---------------------------------------------------------------------
+    % Number of modules in series per PV string.
+    % Example:
+    %   24 * 41.5 V ~= 996 V string MPP voltage at STC.
+    cfg.pv.Ns = 24;
+
+    % ---------------------------------------------------------------------
+    % PV MPPT DC/DC converter model
+    % ---------------------------------------------------------------------
+    % Efficiency model:
+    %   eta = eta_load(P/P_rated) * eta_voltage(Uin/Uout)
+    %
+    % For PV MPPT DC/DC:
+    %   Uin  = V_string_mpp
+    %   Uout = V_dc_link
+    cfg.mpptDcdc.loadFractionCurve = [0.00 0.05 0.10 0.20 0.50 0.75 1.00];
+    cfg.mpptDcdc.etaLoadCurve      = [0.00 0.86 0.91 0.95 0.975 0.982 0.980];
+
+    cfg.mpptDcdc.voltageRatioCurve = [0.50 0.65 0.80 1.00 1.20 1.50 2.00];
+    cfg.mpptDcdc.etaVoltageCurve   = [0.955 0.965 0.975 0.985 0.980 0.970 0.955];
+
+    cfg.mpptDcdc.etaMin = 0.00;
+    cfg.mpptDcdc.etaMax = 0.985;
+
+    cfg.mpptDcdc.VinMin_V = 100;
+    cfg.mpptDcdc.VinMax_V = 1500;
+
+    cfg.mpptDcdc.IinMax_A = inf;
+    cfg.mpptDcdc.IoutMax_A = inf;
+
+    % Allowed voltage conversion ratio:
+    %   ratio = Uin / Uout = V_string_mpp / V_dc_link
+    cfg.mpptDcdc.ratioMin = min(cfg.mpptDcdc.voltageRatioCurve);
+    cfg.mpptDcdc.ratioMax = max(cfg.mpptDcdc.voltageRatioCurve);
+
+    % ---------------------------------------------------------------------
+    % BESS bidirectional buck-boost DC/DC converter model
+    % ---------------------------------------------------------------------
+    % Efficiency model:
+    %   eta = eta_load(P/P_rated) * eta_voltage(Uin/Uout)
+    %
+    % For BESS DC/DC:
+    %   discharge:
+    %       Uin  = V_pack
+    %       Uout = V_dc_link
+    %
+    %   charge:
+    %       Uin  = V_dc_link
+    %       Uout = V_pack
+    cfg.bessDcdc.loadFractionCurve = [0.00 0.05 0.10 0.20 0.50 0.75 1.00];
+    cfg.bessDcdc.etaLoadCurve      = [0.00 0.82 0.88 0.93 0.965 0.972 0.970];
+
+    cfg.bessDcdc.voltageRatioCurve = [0.35 0.50 0.65 0.80 1.00 1.25 1.50 2.00 2.50 3.00];
+    cfg.bessDcdc.etaVoltageCurve   = [0.920 0.940 0.955 0.965 0.975 0.970 0.962 0.950 0.935 0.920];
+
+    cfg.bessDcdc.etaMin = 0.00;
+    cfg.bessDcdc.etaMax = 0.975;
+
+    cfg.bessDcdc.VhighMin_V = 700;    % DC bus side
+    cfg.bessDcdc.VhighMax_V = 1200;
+
+    cfg.bessDcdc.VlowMin_V = 600;     % BESS side
+    cfg.bessDcdc.VlowMax_V = 1050;
+
+    cfg.bessDcdc.IhighMax_A = inf;
+    cfg.bessDcdc.IlowMax_A = inf;
+
+    % Allowed voltage conversion ratio:
+    %   ratio = Uin / Uout
+    cfg.bessDcdc.ratioMin = min(cfg.bessDcdc.voltageRatioCurve);
+    cfg.bessDcdc.ratioMax = max(cfg.bessDcdc.voltageRatioCurve);
+
+    % Optional small difference between charge and discharge direction
+    cfg.bessDcdc.etaChargeFactor = 0.995;
+    cfg.bessDcdc.etaDischargeFactor = 1.000;
+
+        % ---------------------------------------------------------------------
+    % Inverter efficiency model
+    % ---------------------------------------------------------------------
+    % Parabolic power-dependent inverter efficiency:
+    %
+    %   eta = etaMax - curvature * (loadFraction - loadOpt)^2
+    %
+    % where:
+    %   loadFraction = P_ac_out / P_inv_nom
+    %
+    % This replaces the previous piecewise interpolation curve when
+    % cfg.inverter.efficiencyModel = "parabolic".
+    cfg.inverter.efficiencyModel = "parabolic";
+
+    cfg.inverter.etaMax = 0.985;
+    cfg.inverter.etaMin = 0.80;
+
+    % Best efficiency point.
+    cfg.inverter.loadOpt = 0.55;
+
+    % Curvature of the parabola.
+    % Larger value -> stronger efficiency drop at low and high load.
+    cfg.inverter.curvature = 0.09;
+
+    % Efficiency below this load is forced to zero output mode.
+    cfg.inverter.minActiveLoadFraction = 1e-6;
+
+    % Fallback curve if cfg.inverter.efficiencyModel = "curve".
+    cfg.inverter.loadFractionCurve = [0.00 0.05 0.10 0.20 0.50 0.75 1.00];
+    cfg.inverter.etaCurve          = [0.00 0.88 0.92 0.95 0.97 0.965 0.955];
+
+    % ---------------------------------------------------------------------
+    % Diagnostics
+    % ---------------------------------------------------------------------
+    cfg.diagnostics.enabled = true;
+    cfg.diagnostics.testMode = false;
+    cfg.diagnostics.candidateIndex = 1;
+    cfg.diagnostics.coupling = "dc";
+
+    cfg.diagnostics.outputFolder = fullfile(cfg.paths.results, 'diagnostics');
+    
+    % Minden napra egy egyszerusitett napi abra.
+    cfg.diagnostics.plotEveryDay = true;
+
+    % A regi heti es osszefoglalo abrak nem kellenek.
+    cfg.diagnostics.makeWeekPlots = false;
+    cfg.diagnostics.makeDailySummaryPlot = false;
+
+    cfg.diagnostics.saveFullTimeSeries = true;
+    cfg.diagnostics.saveFigFiles = true;
+
+    % ---------------------------------------------------------------------
+    % BESS configuration
+    % ---------------------------------------------------------------------
+    cfg.bess.cellCapacity_Ah = 280;
+    cfg.bess.cellNominalVoltage_V = 3.2;
+
+    % 1000 V-os rendszerhez illesztett LFP BESS rack/string.
+    % Nominalisan kb. 896 V, felso tartomanyban kb. 1020 V.
+    cfg.bess.Ns = 280;
+    cfg.bess.V_nominal_pack = cfg.bess.Ns * cfg.bess.cellNominalVoltage_V;
+
+    cfg.bess.SoC_initial = 0.50;
+
+    % ---------------------------------------------------------------------
     % PV
     % ---------------------------------------------------------------------
     cfg.pv.tiltX = 35;
     cfg.pv.tiltZ = 180;
     cfg.pv.referencePdc_kWp = 1.0;
     cfg.pv.modulePower_kWp = 0.5;
+    % ---------------------------------------------------------------------
+    % PV module and string configuration
+    % ---------------------------------------------------------------------
+    cfg.pv.modulePower_kWp = 0.715;
+    cfg.pv.Ns = 24;
+
+    % If false:
+    %   the parameter sweep keeps the exact requested PV size.
+    %
+    % If true:
+    %   PV sizes are rounded to integer parallel string numbers.
+    cfg.pv.enforceIntegerStrings = true;
+
+    % Options:
+    %   "round", "ceil", "floor"
+    cfg.pv.stringRoundingMode = "round";
 
     % ---------------------------------------------------------------------
     % BESS
@@ -204,7 +387,7 @@ function cfg = create_configurations(basePath)
     end
 
     % Szimulalt idoszak hossza evben
-    cfg.evaluation.simYears = 4;
+    cfg.evaluation.simYears = 3;
 
     % Legjobb rendszer kivalasztasi modja:
     % "minLCSE", "minLCOE", "maxNPV", "minPayback", "minStaticPayback", "maxIRR"
@@ -221,34 +404,31 @@ function cfg = create_configurations(basePath)
 
     
     % ---------------------------------------------------------------------
-    % Diagnostics / test mode
+    % Diagnostics
     % ---------------------------------------------------------------------
-    cfg.diagnostics = struct();
-
-    % Ha true, akkor nem futtatja az osszes candidate-et,
-    % csak a megadott candidateIndex-et, de azt teljes idotavra.
+    cfg.diagnostics.enabled = true;
     cfg.diagnostics.testMode = false;
 
-    % Ezt allitsd arra a candidate-re, amit vizsgalni akarsz.
-    % Pelda: 2 = a riportban szereplo kis BESS-es rendszer.
-    cfg.diagnostics.candidateIndex = 2;
+    % CandidateTable sorszama.
+    cfg.diagnostics.candidateIndex = 10;
 
-    % Teljes idosor mentese diagnosztikahoz.
-    cfg.diagnostics.saveFullTimeSeries = true;
+    % A reszletes DC busz / MPPT / buck-boost diagnosztikahoz DC kell.
+    cfg.diagnostics.coupling = "dc";
 
-    % Napi abrak. Ha ures, automatikusan valaszt problematikus napokat.
-    cfg.diagnostics.plotDayIndices = [];
-
-    % Heti abrak. Ha ures, automatikusan valaszt problematikus hetet.
-    cfg.diagnostics.plotWeekStartDays = [];
-
-    % Kimeneti mappa.
     cfg.diagnostics.outputFolder = fullfile(cfg.paths.results, 'diagnostics');
 
-    % SoC tolerancia a hibadetektalashoz.
-    cfg.diagnostics.socTolerance = 0.02;
+    cfg.diagnostics.saveFullTimeSeries = true;
+    cfg.diagnostics.makeDcCoupledSummaryPlots = true;
+    cfg.diagnostics.saveFigFiles = true;
 
-    % Minimum elvart ciklusszam csak figyelmezteteshez.
+    % Ha ures, automatikus napvalasztas.
+    cfg.diagnostics.plotDayIndices = [];
+
+    % Kezi napvalasztas pelda:
+    % cfg.diagnostics.plotDayIndices = [1 100 200];
+
+    cfg.diagnostics.plotWeekStartDays = [];
+    cfg.diagnostics.socTolerance = 0.02;
     cfg.diagnostics.expectedCycleWarningRatio = 0.30;
     % ---------------------------------------------------------------------
     % OUTPUT METRICS - SCALAR

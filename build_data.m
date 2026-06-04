@@ -7,13 +7,20 @@ function data = build_data(cfg)
 %   data.days(d).date
 %   data.days(d).P_load_kW
 %   data.days(d).P_pv_base_kW
+%   data.days(d).pvGroups
 %   data.days(d).dt_h
 %
 % Fontos:
-%   P_pv_base_kW 1 kWp referencia PV termeles [kW].
+%   P_pv_base_kW referencia PV termeles [kW].
 %
 %   A szimulacioban kesobb:
 %       P_pv_available_kW = P_pv_base_kW * design.PV_kW
+%
+%   A pvGroups mezok tovabbra is orientacionkenti / MPPT-csoportonkenti
+%   adatokat tartalmaznak. A V_mpp_module_V modulszintu MPP feszultseg [V].
+%
+%   A stringfeszultseget kesobb kell kepezni:
+%       V_string_mpp = Ns * V_mpp_module_V
 %
 % Szinkronizalas:
 %   Csak azok a napok kerulnek be, amelyeknel ugyanaz a datum
@@ -77,8 +84,14 @@ function data = build_data(cfg)
     fprintf('  Last common date:  %s\n', datestr(commonDates(end), 'yyyy-mm-dd'));
 
     data = struct();
+
     data.days = repmat( ...
-        struct('date', NaT, 'P_load_kW', [], 'P_pv_base_kW', [], 'dt_h', []), ...
+        struct( ...
+            'date', NaT, ...
+            'P_load_kW', [], ...
+            'P_pv_base_kW', [], ...
+            'pvGroups', [], ...
+            'dt_h', []), ...
         1, nDays);
 
     for d = 1:nDays
@@ -93,8 +106,37 @@ function data = build_data(cfg)
         P_pv_base_kW = P.Ppv(:).';
         dt_pv_h = P.dt_h;
 
+        if isfield(P, 'pvGroups') && ~isempty(P.pvGroups)
+            pvGroups = P.pvGroups;
+        else
+            warning('Missing pvGroups for date %s. MPPT group data will be empty.', ...
+                datestr(commonDates(d), 'yyyy-mm-dd'));
+            pvGroups = [];
+        end
+
         if abs(dt_pv_h - dt_load_h) > 1e-12
-            P_pv_base_kW = local_resample_power_to_target_dt(P_pv_base_kW, dt_pv_h, dt_load_h);
+
+            P_pv_base_kW = local_resample_series_to_target_dt( ...
+                P_pv_base_kW, dt_pv_h, dt_load_h);
+
+            for g = 1:numel(pvGroups)
+
+                if isfield(pvGroups(g), 'P_module_W') && ~isempty(pvGroups(g).P_module_W)
+                    pvGroups(g).P_module_W = local_resample_series_to_target_dt( ...
+                        pvGroups(g).P_module_W, dt_pv_h, dt_load_h);
+                end
+
+                if isfield(pvGroups(g), 'V_mpp_module_V') && ~isempty(pvGroups(g).V_mpp_module_V)
+                    pvGroups(g).V_mpp_module_V = local_resample_series_to_target_dt( ...
+                        pvGroups(g).V_mpp_module_V, dt_pv_h, dt_load_h);
+                end
+
+                if isfield(pvGroups(g), 'P_orientation_kW') && ~isempty(pvGroups(g).P_orientation_kW)
+                    pvGroups(g).P_orientation_kW = local_resample_series_to_target_dt( ...
+                        pvGroups(g).P_orientation_kW, dt_pv_h, dt_load_h);
+                end
+            end
+
             dt_pv_h = dt_load_h;
         end
 
@@ -105,6 +147,36 @@ function data = build_data(cfg)
                    numel(P_load_kW), numel(P_pv_base_kW));
         end
 
+        for g = 1:numel(pvGroups)
+
+            if isfield(pvGroups(g), 'P_module_W') && ~isempty(pvGroups(g).P_module_W)
+                if numel(pvGroups(g).P_module_W) ~= numel(P_load_kW)
+                    error(['P_module_W length mismatch at date %s, group %d. ', ...
+                           'Load length = %d, group length = %d.'], ...
+                           datestr(commonDates(d), 'yyyy-mm-dd'), g, ...
+                           numel(P_load_kW), numel(pvGroups(g).P_module_W));
+                end
+            end
+
+            if isfield(pvGroups(g), 'V_mpp_module_V') && ~isempty(pvGroups(g).V_mpp_module_V)
+                if numel(pvGroups(g).V_mpp_module_V) ~= numel(P_load_kW)
+                    error(['V_mpp_module_V length mismatch at date %s, group %d. ', ...
+                           'Load length = %d, group length = %d.'], ...
+                           datestr(commonDates(d), 'yyyy-mm-dd'), g, ...
+                           numel(P_load_kW), numel(pvGroups(g).V_mpp_module_V));
+                end
+            end
+
+            if isfield(pvGroups(g), 'P_orientation_kW') && ~isempty(pvGroups(g).P_orientation_kW)
+                if numel(pvGroups(g).P_orientation_kW) ~= numel(P_load_kW)
+                    error(['P_orientation_kW length mismatch at date %s, group %d. ', ...
+                           'Load length = %d, group length = %d.'], ...
+                           datestr(commonDates(d), 'yyyy-mm-dd'), g, ...
+                           numel(P_load_kW), numel(pvGroups(g).P_orientation_kW));
+                end
+            end
+        end
+
         if abs(dt_pv_h - dt_load_h) > 1e-12
             error('dt_h mismatch after synchronization at date %s.', ...
                 datestr(commonDates(d), 'yyyy-mm-dd'));
@@ -113,6 +185,7 @@ function data = build_data(cfg)
         data.days(d).date = commonDates(d);
         data.days(d).P_load_kW = P_load_kW;
         data.days(d).P_pv_base_kW = P_pv_base_kW;
+        data.days(d).pvGroups = pvGroups;
         data.days(d).dt_h = dt_load_h;
     end
 
@@ -135,7 +208,9 @@ function data = build_data(cfg)
     data.info.pvReferencePdc_kWp = sum(cfg.pv.referencePdc_kWp);
     data.info.pvTiltX = cfg.pv.tiltX;
     data.info.pvTiltZ = cfg.pv.tiltZ;
-    data.info.note = "PV is stored as 1 kWp reference production. Scale with design.PV_kW.";
+
+    data.info.note = "PV is stored as reference production. Scale power with design.PV_kW.";
+    data.info.notePvGroups = "pvGroups stores orientation-specific module-level MPP voltage and orientation power. Do not mix different orientations for MPPT modeling.";
 
     fprintf('\nOff-grid time series synchronized.\n');
     fprintf('Days: %d\n', data.info.nDays);
@@ -145,10 +220,10 @@ function data = build_data(cfg)
 end
 
 
-function y = local_resample_power_to_target_dt(x, dt_in_h, dt_out_h)
-% LOCAL_RESAMPLE_POWER_TO_TARGET_DT
+function y = local_resample_series_to_target_dt(x, dt_in_h, dt_out_h)
+% LOCAL_RESAMPLE_SERIES_TO_TARGET_DT
 %
-% Teljesitmeny idosor atalakitas masik idofelbontasra.
+% Idoorsor atalakitas masik idofelbontasra.
 %
 % Ha dt_out_h > dt_in_h:
 %   nagyobb idolepesre atlagol.
@@ -156,8 +231,9 @@ function y = local_resample_power_to_target_dt(x, dt_in_h, dt_out_h)
 % Ha dt_out_h < dt_in_h:
 %   kisebb idolepesre ismetlessel bontja fel.
 %
-% Teljesitmenyadatnal ez egyszeru es stabil megoldas.
-% Az energia egyensuly megmarad, ha kesobb teljesitmeny * dt_h alapon szamolsz.
+% Teljesitmeny es feszultseg idosorra is hasznalhato.
+% Teljesitmenynel az atlagolas megtartja az energiaegyensulyt, ha kesobb
+% teljesitmeny * dt_h alapon szamolsz.
 
     x = x(:).';
 
@@ -186,7 +262,7 @@ function y = local_resample_power_to_target_dt(x, dt_in_h, dt_out_h)
         xUse = x(1:nUse);
         xMat = reshape(xUse, factor, nBlocks);
 
-        y = mean(xMat, 1);
+        y = mean(xMat, 1, 'omitnan');
 
     else
 

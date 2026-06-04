@@ -182,6 +182,9 @@ end
 function diag = local_update(diag, dayInput, dayResult, stateBefore, stateAfter, dayIndex, cfg)
 
     V = dayResult.dayVectors;
+    if ~isfield(V, 'V_pv_mpp_mean_V') || isempty(V.V_pv_mpp_mean_V)
+        V.V_pv_mpp_mean_V = local_estimate_pv_mpp_voltage_from_groups(V, numel(V.P_load_kW));
+    end
 
     dt_h = dayInput.dt_h;
 
@@ -557,54 +560,45 @@ end
 % =========================================================================
 function local_plot_diagnostics(diag, cfg)
 
-    D = diag.dailyTable;
-
     savePath = diag.savePath;
 
+    if ~isfolder(savePath)
+        mkdir(savePath);
+    end
+
     % ---------------------------------------------------------------------
-    % Plot day selection
+    % A kert uj mukodes:
+    %   - minden napra pontosan egy egyszerusitett abra
+    %   - nincs heti abra
+    %   - nincs kulon napi osszefoglalo abra
     % ---------------------------------------------------------------------
-    if isfield(cfg.diagnostics, 'plotDayIndices') && ~isempty(cfg.diagnostics.plotDayIndices)
+    if isfield(cfg, 'diagnostics') && ...
+            isfield(cfg.diagnostics, 'plotEveryDay') && ...
+            cfg.diagnostics.plotEveryDay
+
+        dayList = 1:diag.nDays;
+
+    elseif isfield(cfg, 'diagnostics') && ...
+            isfield(cfg.diagnostics, 'plotDayIndices') && ...
+            ~isempty(cfg.diagnostics.plotDayIndices)
+
         dayList = cfg.diagnostics.plotDayIndices(:).';
+
     else
-        dayList = local_pick_problem_days(D);
+
+        dayList = 1:diag.nDays;
     end
 
     dayList = unique(dayList);
     dayList = dayList(dayList >= 1 & dayList <= diag.nDays);
 
     for i = 1:numel(dayList)
-        local_plot_day(diag, dayList(i), savePath);
+        local_plot_day(diag, dayList(i), savePath, cfg);
     end
-
-    % ---------------------------------------------------------------------
-    % Plot week selection
-    % ---------------------------------------------------------------------
-    if isfield(cfg.diagnostics, 'plotWeekStartDays') && ~isempty(cfg.diagnostics.plotWeekStartDays)
-        weekStartList = cfg.diagnostics.plotWeekStartDays(:).';
-    else
-        [~, idxWorst] = max( ...
-            D.curtailmentWhileBessNotFull_kWh + ...
-            D.gridImportWhileBessNotEmpty_kWh);
-
-        if isempty(idxWorst) || isnan(idxWorst)
-            weekStartList = 1;
-        else
-            weekStartList = max(1, D.dayIndex(idxWorst) - 3);
-        end
-    end
-
-    weekStartList = unique(weekStartList);
-
-    for i = 1:numel(weekStartList)
-        local_plot_week(diag, weekStartList(i), savePath);
-    end
-
-    local_plot_daily_summary(D, savePath);
 end
 
 
-function local_plot_day(diag, dayIndex, savePath)
+function local_plot_day(diag, dayIndex, savePath, cfg)
 
     S = diag.series;
 
@@ -616,90 +610,117 @@ function local_plot_day(diag, dayIndex, savePath)
 
     t = S.time_h(idx) - (dayIndex - 1) * 24;
 
-    fig = figure('Color', 'w', ...
-        'Name', sprintf('BESS diagnostic day %d', dayIndex), ...
-        'Position', [100, 100, 1300, 900]);
+    fig = figure( ...
+        'Color', 'w', ...
+        'Name', sprintf('Diagnosztika nap %d', dayIndex), ...
+        'Position', [80, 80, 1500, 950]);
 
     tiledlayout(4, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
 
     % ---------------------------------------------------------------------
-    % Load / PV / Grid
+    % Fo cim: meretek
+    % ---------------------------------------------------------------------
+    P_inv_kW = local_get_design_value(diag.design, 'P_inv_kW');
+    P_pv_kW = local_get_design_value(diag.design, 'P_PV_kW');
+    E_bess_kWh = local_get_design_value(diag.design, 'E_BESS_kWh');
+    P_bess_kW = local_get_design_value(diag.design, 'P_BESS_kW');
+
+    mainTitle = sprintf( ...
+        'Inverter: %.0f kW | Akkumulator: %.0f kWh / %.0f kW | PV: %.0f kW | Nap: %d', ...
+        P_inv_kW, ...
+        E_bess_kWh, ...
+        P_bess_kW, ...
+        P_pv_kW, ...
+        dayIndex);
+
+    sgtitle(mainTitle, 'FontWeight', 'bold');
+
+    % ---------------------------------------------------------------------
+    % 1) PV, terheles, halozati import
     % ---------------------------------------------------------------------
     nexttile;
     hold on;
     grid on;
 
-    plot(t, S.P_load_kW(idx), 'LineWidth', 1.4, 'DisplayName', 'Load');
-    plot(t, S.P_pv_available_kW(idx), 'LineWidth', 1.4, 'DisplayName', 'PV available');
-    plot(t, S.P_grid_import_kW(idx), 'LineWidth', 1.2, 'DisplayName', 'Grid import');
-    plot(t, S.P_curtailment_kW(idx), 'LineWidth', 1.2, 'DisplayName', 'Curtailment');
+    local_plot_field_if_available(t, S, idx, 'P_load_kW', 'Terheles');
+    local_plot_field_if_available(t, S, idx, 'P_pv_available_kW', 'PV termeles');
+    local_plot_field_if_available(t, S, idx, 'P_grid_import_kW', 'Halozati import');
+    local_plot_field_if_available(t, S, idx, 'P_curtailment_kW', 'Leszabalyozas');
 
-    ylabel('Power [kW]');
-    title(sprintf('Day %d: load, PV, grid import, curtailment', dayIndex));
+    ylabel('Teljesitmeny [kW]');
+    title('PV, terheles es halozati import');
     legend('Location', 'best');
     xlim([0 24]);
 
     % ---------------------------------------------------------------------
-    % BESS flows
+    % 2) Feszultsegszintek: PV, DC busz, BESS
     % ---------------------------------------------------------------------
     nexttile;
     hold on;
     grid on;
 
-    plot(t, S.P_pv_to_bess_kW(idx), 'LineWidth', 1.4, 'DisplayName', 'PV -> BESS');
-    plot(t, S.P_bess_to_load_kW(idx), 'LineWidth', 1.4, 'DisplayName', 'BESS -> load');
+    local_plot_field_if_available(t, S, idx, 'V_pv_mpp_mean_V', 'PV MPP feszultseg');
+    local_plot_field_if_available(t, S, idx, 'V_dc_link_V', 'DC busz feszultseg');
+    local_plot_field_if_available(t, S, idx, 'V_pack_actual_V', 'BESS feszultseg');
 
-    if isfield(S, 'P_pack_req_kW')
-        plot(t, S.P_pack_req_kW(idx), '--', 'LineWidth', 1.0, 'DisplayName', 'Pack request');
-    end
-
-    if isfield(S, 'P_pack_actual_kW')
-        plot(t, S.P_pack_actual_kW(idx), ':', 'LineWidth', 1.2, 'DisplayName', 'Pack actual');
-    end
-
-    ylabel('Power [kW]');
-    title('BESS charge/discharge signals');
+    ylabel('Feszultseg [V]');
+    title('Feszultsegszintek');
     legend('Location', 'best');
     xlim([0 24]);
 
     % ---------------------------------------------------------------------
-    % SoC
+    % 3) Akkumulator SoC
     % ---------------------------------------------------------------------
     nexttile;
     hold on;
     grid on;
 
-    plot(t, S.SoC(idx) * 100, 'LineWidth', 1.6, 'DisplayName', 'SoC');
+    if isfield(S, 'SoC')
+        plot(t, S.SoC(idx) * 100, 'LineWidth', 1.5, 'DisplayName', 'SoC');
+    end
 
     ylabel('SoC [%]');
-    title('Battery SoC');
+    title('Akkumulator toltottseg');
     ylim([0 100]);
-    xlim([0 24]);
     legend('Location', 'best');
+    xlim([0 24]);
 
     % ---------------------------------------------------------------------
-    % Contradictions
+    % 4) Konvertervesztesegek
     % ---------------------------------------------------------------------
     nexttile;
     hold on;
     grid on;
 
-    plot(t, S.P_curtailment_kW(idx), 'LineWidth', 1.3, 'DisplayName', 'Curtailment');
-    plot(t, S.P_grid_import_kW(idx), 'LineWidth', 1.3, 'DisplayName', 'Grid import');
-    plot(t, S.P_pv_to_bess_kW(idx), 'LineWidth', 1.3, 'DisplayName', 'PV -> BESS');
-    plot(t, S.P_bess_to_load_kW(idx), 'LineWidth', 1.3, 'DisplayName', 'BESS -> load');
+    local_plot_field_if_available(t, S, idx, 'P_inv_conversion_loss_kW', 'Inverter veszteseg');
+    local_plot_field_if_available(t, S, idx, 'P_pv_dcdc_conversion_loss_kW', 'PV DC/DC veszteseg');
+    local_plot_field_if_available(t, S, idx, 'P_bess_dcdc_conversion_loss_kW', 'BESS DC/DC veszteseg');
 
-    xlabel('Time [h]');
-    ylabel('Power [kW]');
-    title('Contradiction view');
+    xlabel('Ido [h]');
+    ylabel('Teljesitmeny [kW]');
+    title('Konvertervesztesegek');
     legend('Location', 'best');
     xlim([0 24]);
 
-    fileName = sprintf('diagnostic_day_%04d.png', dayIndex);
+    % ---------------------------------------------------------------------
+    % Save
+    % ---------------------------------------------------------------------
+    if ~isfolder(savePath)
+        mkdir(savePath);
+    end
+
+    fileName = sprintf('diagnosztika_nap_%04d.png', dayIndex);
     saveas(fig, fullfile(savePath, fileName));
 
-    fileNameFig = sprintf('diagnostic_day_%04d.fig', dayIndex);
-    savefig(fig, fullfile(savePath, fileNameFig));
+    if isfield(cfg, 'diagnostics') && ...
+            isfield(cfg.diagnostics, 'saveFigFiles') && ...
+            cfg.diagnostics.saveFigFiles
+
+        fileNameFig = sprintf('diagnosztika_nap_%04d.fig', dayIndex);
+        savefig(fig, fullfile(savePath, fileNameFig));
+    end
+
+    close(fig);
 end
 
 
@@ -903,7 +924,37 @@ function names = local_signal_names()
         'P_bess_high_req_kW', ...
         'P_bess_high_actual_kW', ...
         'P_pack_req_kW', ...
-        'P_pack_actual_kW'};
+        'P_pack_actual_kW', ...
+        'V_pv_mpp_mean_V', ...
+        'V_dc_link_V', ...
+        'V_pack_pre_V', ...
+        'V_pack_actual_V', ...
+        'P_pv_mpp_total_kW', ...
+        'P_pv_after_mppt_dcdc_kW', ...
+        'P_pv_mppt_balance_error_kW', ...
+        'P_pv_dcdc_conversion_loss_kW', ...
+        'P_pv_dcdc_power_clipped_kW', ...
+        'P_bess_dcdc_conversion_loss_kW', ...
+        'P_bess_dcdc_power_clipped_kW', ...
+        'P_ac_required_from_inv_kW', ...
+        'P_dc_required_at_inv_kW', ...
+        'P_pv_dc_to_inv_kW', ...
+        'P_dc_deficit_kW', ...
+        'P_pv_surplus_kW', ...
+        'P_inv_dc_input_total_kW', ...
+        'P_inv_ac_output_kW', ...
+        'eta_inverter', ...
+        'inverter_loadFraction', ...
+        'eta_pv_mppt_dcdc', ...
+        'mppt_voltageRatio_mean', ...
+        'mppt_loadFraction_mean', ...
+        'mppt_etaLoad_mean', ...
+        'mppt_etaVoltage_mean', ...
+        'eta_bess_dcdc', ...
+        'bess_dcdc_etaLoad', ...
+        'bess_dcdc_etaVoltage', ...
+        'bess_dcdc_voltageRatio', ...
+        'bess_dcdc_loadFraction'};
 end
 
 
@@ -1005,4 +1056,59 @@ function dayList = local_pick_problem_days(D)
     if isempty(dayList)
         dayList = 1:min(5, height(D));
     end
+end
+
+function local_plot_field_if_available(t, S, idx, fieldName, displayName)
+
+    if ~isfield(S, fieldName)
+        return;
+    end
+
+    x = S.(fieldName)(idx);
+
+    if isempty(x) || all(isnan(x))
+        return;
+    end
+
+    plot(t, x, 'LineWidth', 1.2, 'DisplayName', displayName);
+end
+
+function V_pv_mean_V = local_estimate_pv_mpp_voltage_from_groups(V, N)
+
+    V_pv_mean_V = NaN(N, 1);
+
+    if ~isfield(V, 'pvGroups') || isempty(V.pvGroups)
+        return;
+    end
+
+    groups = V.pvGroups;
+
+    M = NaN(N, numel(groups));
+
+    for g = 1:numel(groups)
+
+        if isfield(groups(g), 'V_string_mpp_V') && ~isempty(groups(g).V_string_mpp_V)
+            x = groups(g).V_string_mpp_V(:);
+        elseif isfield(groups(g), 'V_mpp_module_V') && ~isempty(groups(g).V_mpp_module_V)
+
+            if isfield(groups(g), 'Ns') && ~isempty(groups(g).Ns)
+                Ns = groups(g).Ns;
+            else
+                Ns = 1;
+            end
+
+            x = Ns * groups(g).V_mpp_module_V(:);
+        else
+            continue;
+        end
+
+        if numel(x) >= N
+            M(:, g) = x(1:N);
+        else
+            x(end+1:N, 1) = NaN;
+            M(:, g) = x;
+        end
+    end
+
+    V_pv_mean_V = mean(M, 2, 'omitnan');
 end

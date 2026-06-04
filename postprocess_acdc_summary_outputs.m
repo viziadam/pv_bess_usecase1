@@ -1,892 +1,722 @@
 function acdcResult = postprocess_acdc_summary_outputs(acdcResult, cfg)
 % POSTPROCESS_ACDC_SUMMARY_OUTPUTS
 %
-% AC/DC osszesito riport javitasa a vegleges esettanulmanyos megjeleniteshez.
+% Letrehoz egy jol elerheto, szep osszefoglalo tablazatot:
+%   1) sima napelemes rendszer
+%   2) legjobb DC-csatolt PV+BESS rendszer
+%   3) legjobb AC-csatolt PV+BESS rendszer
 %
-% Javitasok:
-%   1) NPV ujraszamolasa csak a szimulalt idoszakra.
-%   2) BESS-only NPV ujraszamolasa csak a szimulalt idoszakra.
-%   3) Az 5 kivalasztott jelolt ujrakivalasztasa a periodus NPV alapjan.
-%   4) X tengely feliratok javitasa: topologia + PV meret + BESS meret.
-%   5) Osszesito abrak ujrageneralasa.
-%   6) Heatmapek a legkisebb invertermeret mellett:
-%      - periodus NPV,
-%      - LCOE,
-%      - BESS-only periodus NPV.
-
-    if nargin < 1 || isempty(acdcResult)
-        error('acdcResult input is required.');
-    end
+% A fuggveny nem szamolja ujra a gazdasagi mutatokat.
+% Csak az evaluation_acdc_summary / evaluation altal mar eloallitott
+% resultTable mezokbol dolgozik.
 
     if nargin < 2
-        cfg = struct();
+        error('Hasznalat: acdcResult = postprocess_acdc_summary_outputs(acdcResult, cfg)');
     end
 
-    if ~isfield(acdcResult, 'combinedTable')
-        error('acdcResult.combinedTable is missing.');
+    if ~isstruct(acdcResult)
+        error('acdcResult must be a struct.');
     end
 
-    if ~isfield(acdcResult, 'outputFolder')
-        error('acdcResult.outputFolder is missing.');
+    if ~isfield(cfg, 'paths') || ~isfield(cfg.paths, 'figures')
+        error('cfg.paths.figures hianyzik.');
     end
 
-    outputFolder = acdcResult.outputFolder;
-    figureFolder = fullfile(outputFolder, 'figures');
-    tableFolder = fullfile(outputFolder, 'tables');
-
-    if ~exist(figureFolder, 'dir')
-        mkdir(figureFolder);
-    end
-
-    if ~exist(tableFolder, 'dir')
-        mkdir(tableFolder);
-    end
-
-    econ = local_get_economics(acdcResult);
+    acdcResult = local_ensure_combined_table(acdcResult);
 
     T = acdcResult.combinedTable;
-    T = local_recalculate_period_metrics(T, cfg, econ);
 
-    selected = local_select_report_candidates(T);
-    selectedTable = selected.table;
-    selectedLabels = selected.labels;
-    selectedAxisLabels = local_candidate_axis_labels(selectedTable);
-
-    selectedSummaryTable = local_build_selected_summary_table(selectedTable, selectedLabels);
-    bessOnlyTable = local_build_bess_only_table(selectedTable, selectedLabels);
-
-    % ---------------------------------------------------------------------
-    % Erintett abrak ujrageneralasa helyes feliratokkal es periodus NPV-vel
-    % ---------------------------------------------------------------------
-    local_plot_value_cost_payback_summary(selectedTable, selectedAxisLabels, figureFolder);
-    local_plot_self_consumption_summary(selectedTable, selectedAxisLabels, figureFolder);
-    local_plot_useful_energy_and_losses(selectedTable, selectedAxisLabels, figureFolder);
-
-    % 3D NPV abrak felulirasa periodus NPV-vel.
-    local_plot_3d_metric(T(T.Coupling == "dc", :), 'NPV_millionHUF', ...
-        'Netto jelenertek a szimulalt idoszakra', 'millio Ft', 'max', figureFolder, 'dc');
-
-    local_plot_3d_metric(T(T.Coupling == "ac", :), 'NPV_millionHUF', ...
-        'Netto jelenertek a szimulalt idoszakra', 'millio Ft', 'max', figureFolder, 'ac');
-
-    % ---------------------------------------------------------------------
-    % Uj heatmapek a legkisebb invertermeret mellett
-    % ---------------------------------------------------------------------
-    local_plot_min_inverter_heatmap_pair(T, 'NPV_millionHUF', ...
-        'NPV a szimulalt idoszakra', 'millio Ft', 'max', figureFolder, 'heatmap_min_inverter_npv');
-
-    lcoeField = local_find_first_existing_field(T, { ...
-        'LCOE_usefulPV_HUF_per_kWh', ...
-        'LCOE_HUF_per_kWh'});
-
-    if strlength(lcoeField) > 0
-        local_plot_min_inverter_heatmap_pair(T, char(lcoeField), ...
-            'LCOE', 'Ft/kWh', 'min', figureFolder, 'heatmap_min_inverter_lcoe');
-    else
-        warning('postprocess_acdc_summary_outputs:missingLCOE', ...
-            'Nem talaltam LCOE mezot, ezert LCOE heatmap nem keszult.');
+    if isempty(T) || height(T) == 0
+        error('acdcResult.combinedTable ures.');
     end
 
-    local_plot_min_inverter_heatmap_pair(T, 'NPV_BESSOnly_millionHUF', ...
-        'BESS-only NPV a szimulalt idoszakra', 'millio Ft', 'max', figureFolder, 'heatmap_min_inverter_bess_only_npv');
+    T = local_ensure_required_columns(T);
 
-    % ---------------------------------------------------------------------
-    % Tablazatok es MAT eredmeny frissitese
-    % ---------------------------------------------------------------------
-    writetable(T, fullfile(tableFolder, 'acdc_combined_candidate_table.csv'));
-    writetable(selectedSummaryTable, fullfile(tableFolder, 'acdc_selected_candidates_summary.csv'));
-    writetable(bessOnlyTable, fullfile(tableFolder, 'acdc_selected_bess_only_period_value_table.csv'));
+    outputRoot = fullfile(cfg.paths.figures, 'evaluation', 'acdc_summary_best_systems');
 
-    acdcResult.combinedTable = T;
-    acdcResult.selectedTable = selectedTable;
-    acdcResult.selectedSummaryTable = selectedSummaryTable;
-    acdcResult.selectedBessOnlyValueTable = bessOnlyTable;
-    acdcResult.selectedAxisLabels = selectedAxisLabels;
-    acdcResult.periodNpvDefinition = "energyCostSavings_HUF - period allocated PV/inverter/BESS CAPEX and OPEX";
+    if ~exist(outputRoot, 'dir')
+        mkdir(outputRoot);
+    end
 
-    save(fullfile(outputFolder, 'evaluation_acdc_summary_result.mat'), ...
-        'acdcResult', '-v7.3');
+    selection = local_select_summary_systems(T);
 
-    fprintf('\nAC/DC summary postprocess finished.\n');
-    fprintf('Period-based NPV and heatmaps regenerated.\n');
+    summaryTable = local_create_best_systems_summary_table(T, selection);
+
+    writetable(summaryTable, fullfile(outputRoot, 'best_systems_summary.csv'));
+
+    save(fullfile(outputRoot, 'best_systems_summary.mat'), ...
+        'summaryTable', ...
+        'selection', ...
+        '-v7.3');
+
+    local_plot_best_systems_summary_table( ...
+        summaryTable, ...
+        outputRoot, ...
+        'best_systems_summary');
+
+    local_write_best_systems_summary_html( ...
+        summaryTable, ...
+        outputRoot, ...
+        'best_systems_summary');
+
+    acdcResult.bestSystemsSummary = struct();
+    acdcResult.bestSystemsSummary.outputRoot = outputRoot;
+    acdcResult.bestSystemsSummary.selection = selection;
+    acdcResult.bestSystemsSummary.summaryTable = summaryTable;
+
+    fprintf('\nBest systems summary table created.\n');
+    fprintf('Output folder: %s\n', outputRoot);
 end
 
 
 % =========================================================================
-% PERIOD METRICS
+% COMBINED TABLE
 % =========================================================================
-function econ = local_get_economics(acdcResult)
+function acdcResult = local_ensure_combined_table(acdcResult)
 
-    if isfield(acdcResult, 'dcEvaluation') && ...
-       isfield(acdcResult.dcEvaluation, 'evalCfg') && ...
-       isfield(acdcResult.dcEvaluation.evalCfg, 'economics')
-        econ = acdcResult.dcEvaluation.evalCfg.economics;
+    if isfield(acdcResult, 'combinedTable') && ...
+            istable(acdcResult.combinedTable) && ...
+            height(acdcResult.combinedTable) > 0
+
         return;
     end
 
-    if isfield(acdcResult, 'acEvaluation') && ...
-       isfield(acdcResult.acEvaluation, 'evalCfg') && ...
-       isfield(acdcResult.acEvaluation.evalCfg, 'economics')
-        econ = acdcResult.acEvaluation.evalCfg.economics;
+    if isfield(acdcResult, 'dcTable') && isfield(acdcResult, 'acTable')
+        acdcResult.combinedTable = local_append_table_union( ...
+            acdcResult.dcTable, ...
+            acdcResult.acTable);
         return;
     end
 
-    error('Cannot determine economics settings from acdcResult.');
+    error('acdcResult.combinedTable is missing, and dcTable/acTable are also missing.');
 end
 
 
-function T = local_recalculate_period_metrics(T, cfg, econ)
+function out = local_append_table_union(A, B)
 
-    simYears = econ.simYears;
-    pvLifetime = econ.pvLifetime_years;
-    inverterLifetime = econ.inverterLifetime_years;
-
-    if simYears <= 0
-        error('econ.simYears must be positive.');
-    end
-
-    n = height(T);
-
-    finalSoH = local_col(T, 'finalSoH', ones(n, 1));
-    finalSoH(~isfinite(finalSoH)) = 1;
-
-    capexPV = local_col(T, 'capexPV_HUF', zeros(n, 1));
-    capexInv = local_col(T, 'capexInverter_HUF', zeros(n, 1));
-    capexBess = local_col(T, 'capexBESS_HUF', zeros(n, 1));
-
-    hasBess = local_col(T, 'E_BESS_kWh', zeros(n, 1)) > 1e-9;
-
-    deltaSoH = max(0, 1 - finalSoH);
-    deltaSoH(~hasBess) = 0;
-
-    T.reportSimYears = repmat(simYears, n, 1);
-    T.reportDeltaSoH = deltaSoH;
-
-    T.reportPeriodPVCapex_HUF = capexPV ./ pvLifetime .* simYears;
-    T.reportPeriodPVOpex_HUF = capexPV .* econ.pv_opex_frac_per_year .* simYears;
-
-    T.reportPeriodInverterCapex_HUF = capexInv ./ inverterLifetime .* simYears;
-    T.reportPeriodInverterOpex_HUF = capexInv .* econ.inverter_opex_frac_per_year .* simYears;
-
-    T.reportPeriodBessDegradation_HUF = (deltaSoH ./ 0.2) .* capexBess;
-    T.reportPeriodBessOpex_HUF = capexBess .* econ.bess_opex_frac_per_year .* simYears;
-
-    T.reportPeriodInvestmentCost_HUF = ...
-        T.reportPeriodPVCapex_HUF + ...
-        T.reportPeriodPVOpex_HUF + ...
-        T.reportPeriodInverterCapex_HUF + ...
-        T.reportPeriodInverterOpex_HUF + ...
-        T.reportPeriodBessDegradation_HUF + ...
-        T.reportPeriodBessOpex_HUF;
-
-    T.reportPeriodCostSaving_HUF = local_col(T, 'energyCostSavings_HUF', zeros(n, 1));
-
-    T.reportPeriodNetValue_HUF = ...
-        T.reportPeriodCostSaving_HUF - T.reportPeriodInvestmentCost_HUF;
-
-    importPrice_HUF_per_kWh = local_get_import_price(T, cfg);
-
-    T.reportPeriodBessAcSaving_HUF = ...
-        local_col(T, 'bessToLoad_kWh', zeros(n, 1)) .* importPrice_HUF_per_kWh;
-
-    T.reportPeriodBessAcSaving_HUF(~hasBess) = 0;
-
-    T.reportPeriodBessOnlyCost_HUF = ...
-        T.reportPeriodBessDegradation_HUF + T.reportPeriodBessOpex_HUF;
-
-    T.reportPeriodBessOnlyNetValue_HUF = ...
-        T.reportPeriodBessAcSaving_HUF - T.reportPeriodBessOnlyCost_HUF;
-
-    % ------------------------------------------------------------------
-    % FONTOS JAVITAS:
-    % Az AC/DC osszesito NPV-je mostantol nem teljes projekt-elettartamra
-    % extrapolalt NPV, hanem kizárólag a szimulalt idoszak netto erteke.
-    % ------------------------------------------------------------------
-    if ismember('NPV_millionHUF', T.Properties.VariableNames)
-        T.NPV_projectLifetime_original_millionHUF = T.NPV_millionHUF;
-    end
-
-    if ismember('NPV_BESSOnly_millionHUF', T.Properties.VariableNames)
-        T.NPV_BESSOnly_projectLifetime_original_millionHUF = T.NPV_BESSOnly_millionHUF;
-    end
-
-    T.NPV_millionHUF = T.reportPeriodNetValue_HUF ./ 1e6;
-    T.NPV_BESSOnly_millionHUF = T.reportPeriodBessOnlyNetValue_HUF ./ 1e6;
-
-    % Energia es veszteseg bontas, teljes szimulalt idoszakra.
-    T.reportUsefulACEnergy_MWh = ...
-        (local_col(T, 'pvToLoad_kWh', zeros(n, 1)) + ...
-         local_col(T, 'bessToLoad_kWh', zeros(n, 1))) ./ 1000;
-
-    invLoss = local_col(T, 'inverterConversionLoss_kWh', zeros(n, 1));
-
-    if all(abs(invLoss) < 1e-12)
-        invLoss = local_col(T, 'inverterLoss_kWh', zeros(n, 1));
-    end
-
-    T.reportInverterLoss_MWh = invLoss ./ 1000;
-    T.reportDcdcLoss_MWh = local_col(T, 'dcdcConversionLoss_kWh', zeros(n, 1)) ./ 1000;
-    T.reportBessInternalLoss_MWh = local_col(T, 'bessCellLoss_kWh', zeros(n, 1)) ./ 1000;
-    T.reportCurtailment_MWh = local_col(T, 'curtailment_kWh', zeros(n, 1)) ./ 1000;
-
-    if ~ismember('selfConsumption_pct', T.Properties.VariableNames)
-        T.selfConsumption_pct = 100 * local_col(T, 'selfConsumptionRatio', zeros(n, 1));
-    end
-
-    if ~ismember('selfSufficiency_pct', T.Properties.VariableNames)
-        T.selfSufficiency_pct = 100 * local_col(T, 'selfSufficiencyRatio', zeros(n, 1));
-    end
-
-    if ~ismember('annualBessEquivalentCycles', T.Properties.VariableNames)
-        T.annualBessEquivalentCycles = local_col(T, 'bessEquivalentCycles', zeros(n, 1)) ./ simYears;
-    end
-end
-
-
-function importPrice = local_get_import_price(T, cfg)
-
-    n = height(T);
-
-    if isfield(cfg, 'cost') && isfield(cfg.cost, 'grid_import_huf_per_kWh')
-        importPrice = repmat(cfg.cost.grid_import_huf_per_kWh, n, 1);
+    if isempty(A) || height(A) == 0
+        out = B;
         return;
     end
 
-    if ismember('gridOnlyEnergyCost_HUF', T.Properties.VariableNames) && ...
-       ismember('loadEnergy_kWh', T.Properties.VariableNames)
-        importPrice = T.gridOnlyEnergyCost_HUF ./ max(T.loadEnergy_kWh, eps);
-        importPrice(~isfinite(importPrice)) = 0;
+    if isempty(B) || height(B) == 0
+        out = A;
         return;
     end
 
-    error('Cannot determine grid import price for BESS-only value calculation.');
+    varsA = string(A.Properties.VariableNames);
+    varsB = string(B.Properties.VariableNames);
+
+    allVars = unique([varsA(:); varsB(:)], 'stable');
+
+    A = local_add_missing_table_vars(A, allVars, B);
+    B = local_add_missing_table_vars(B, allVars, A);
+
+    A = A(:, cellstr(allVars));
+    B = B(:, cellstr(allVars));
+
+    out = [A; B];
 end
 
 
-function x = local_col(T, name, defaultValue)
+function T = local_add_missing_table_vars(T, allVars, referenceTable)
 
-    if ismember(name, T.Properties.VariableNames)
-        x = T.(name);
-    else
-        x = defaultValue;
-    end
+    currentVars = string(T.Properties.VariableNames);
 
-    x = double(x);
-end
+    for i = 1:numel(allVars)
 
+        varName = char(allVars(i));
 
-% =========================================================================
-% CANDIDATE SELECTION AND LABELS
-% =========================================================================
-function selected = local_select_report_candidates(T)
-
-    validBase = logical(T.wasSimulated) & ~logical(T.hasError);
-
-    pvOnlyMask = validBase & T.E_BESS_kWh <= 1e-9;
-    onlyPv = local_pick_best_row(T, pvOnlyMask, 'LCSE_HUF_per_kWh_saved', 'min', []);
-
-    dcBessMask = validBase & T.Coupling == "dc" & T.E_BESS_kWh > 1e-9;
-    acBessMask = validBase & T.Coupling == "ac" & T.E_BESS_kWh > 1e-9;
-
-    dcBestLcse = local_pick_best_row(T, dcBessMask, 'LCSE_HUF_per_kWh_saved', 'min', []);
-    dcBestNpv = local_pick_best_row(T, dcBessMask, 'NPV_millionHUF', 'max', dcBestLcse);
-
-    acBestLcse = local_pick_best_row(T, acBessMask, 'LCSE_HUF_per_kWh_saved', 'min', []);
-    acBestNpv = local_pick_best_row(T, acBessMask, 'NPV_millionHUF', 'max', acBestLcse);
-
-    selectedTable = [onlyPv; dcBestLcse; dcBestNpv; acBestLcse; acBestNpv];
-
-    labels = [ ...
-        "Legjobb csak PV"; ...
-        "Legjobb DC - LCSE"; ...
-        "Legjobb DC - periodus NPV"; ...
-        "Legjobb AC - LCSE"; ...
-        "Legjobb AC - periodus NPV"];
-
-    selectedTable.SelectionLabel = labels;
-    selectedTable = movevars(selectedTable, 'SelectionLabel', 'Before', 1);
-
-    selected = struct();
-    selected.table = selectedTable;
-    selected.labels = labels;
-end
-
-
-function row = local_pick_best_row(T, mask, metricField, direction, excludedRow)
-
-    if ~ismember(metricField, T.Properties.VariableNames)
-        error('Missing metric field for candidate selection: %s', metricField);
-    end
-
-    valid = mask(:) & isfinite(T.(metricField));
-
-    if ~isempty(excludedRow) && height(excludedRow) == 1
-        sameRow = T.Coupling == excludedRow.Coupling & ...
-            T.candidateIndex == excludedRow.candidateIndex;
-
-        validWithExclusion = valid & ~sameRow;
-
-        if any(validWithExclusion)
-            valid = validWithExclusion;
-        end
-    end
-
-    if ~any(valid)
-        error('No valid candidate found for metric %s.', metricField);
-    end
-
-    values = T.(metricField);
-
-    switch string(direction)
-        case "min"
-            values(~valid) = inf;
-            [~, idx] = min(values);
-        case "max"
-            values(~valid) = -inf;
-            [~, idx] = max(values);
-        otherwise
-            error('Unknown direction: %s', string(direction));
-    end
-
-    row = T(idx, :);
-end
-
-
-function labels = local_candidate_axis_labels(T)
-
-    labels = strings(height(T), 1);
-
-    for i = 1:height(T)
-        pvSize = T.P_PV_kW(i);
-        bessSize = T.E_BESS_kWh(i);
-
-        if bessSize <= 1e-9
-            labels(i) = string(sprintf('Csak PV\nPV = %.0f kWp\nBESS = 0 kWh', pvSize));
-        else
-            labels(i) = string(sprintf('%s\nPV = %.0f kWp\nBESS = %.0f kWh', ...
-                upper(char(T.Coupling(i))), pvSize, bessSize));
-        end
-    end
-end
-
-
-% =========================================================================
-% TABLES
-% =========================================================================
-function S = local_build_selected_summary_table(T, labels)
-
-    S = table();
-    S.Selection = labels(:);
-    S.AxisLabel = local_candidate_axis_labels(T);
-    S.Coupling = T.Coupling;
-    S.candidateIndex = T.candidateIndex;
-
-    S.P_inv_kW = T.P_inv_kW;
-    S.DCAC_ratio = T.DCAC_ratio;
-    S.BESS_PV_ratio_kWh_per_kWp = T.BESS_PV_ratio;
-    S.P_PV_kWp = T.P_PV_kW;
-    S.E_BESS_kWh = T.E_BESS_kWh;
-    S.P_BESS_kW = T.P_BESS_kW;
-
-    S.Load_MWh_total = T.loadEnergy_kWh ./ 1000;
-    S.PV_available_MWh_total = T.pvEnergyAvailable_kWh ./ 1000;
-    S.PV_to_load_MWh_total = T.pvToLoad_kWh ./ 1000;
-    S.PV_to_BESS_MWh_total = T.pvToBess_kWh ./ 1000;
-    S.BESS_to_load_MWh_total = T.bessToLoad_kWh ./ 1000;
-    S.Grid_import_MWh_total = T.gridImport_kWh ./ 1000;
-    S.Curtailment_MWh_total = T.curtailment_kWh ./ 1000;
-
-    S.Grid_import_reduction_pct = T.gridImportReduction_pct;
-    S.Self_consumption_pct = T.selfConsumption_pct;
-    S.Self_sufficiency_pct = T.selfSufficiency_pct;
-    S.Curtailment_pct = T.curtailment_pct;
-    S.Equivalent_cycles_per_year = T.annualBessEquivalentCycles;
-    S.Final_SoH = T.finalSoH;
-
-    S.Initial_CAPEX_millionHUF = T.initialCapex_HUF ./ 1e6;
-    S.PV_CAPEX_millionHUF = T.capexPV_HUF ./ 1e6;
-    S.Inverter_CAPEX_millionHUF = T.capexInverter_HUF ./ 1e6;
-    S.BESS_CAPEX_millionHUF = T.capexBESS_HUF ./ 1e6;
-
-    S.Period_energy_cost_saving_millionHUF = T.reportPeriodCostSaving_HUF ./ 1e6;
-    S.Period_PV_CAPEX_millionHUF = T.reportPeriodPVCapex_HUF ./ 1e6;
-    S.Period_PV_OPEX_millionHUF = T.reportPeriodPVOpex_HUF ./ 1e6;
-    S.Period_inverter_CAPEX_millionHUF = T.reportPeriodInverterCapex_HUF ./ 1e6;
-    S.Period_inverter_OPEX_millionHUF = T.reportPeriodInverterOpex_HUF ./ 1e6;
-    S.Period_BESS_degradation_CAPEX_millionHUF = T.reportPeriodBessDegradation_HUF ./ 1e6;
-    S.Period_BESS_OPEX_millionHUF = T.reportPeriodBessOpex_HUF ./ 1e6;
-    S.Period_net_value_millionHUF = T.reportPeriodNetValue_HUF ./ 1e6;
-
-    S.BESS_AC_energy_saving_millionHUF = T.reportPeriodBessAcSaving_HUF ./ 1e6;
-    S.BESS_only_cost_millionHUF = T.reportPeriodBessOnlyCost_HUF ./ 1e6;
-    S.BESS_only_net_value_millionHUF = T.reportPeriodBessOnlyNetValue_HUF ./ 1e6;
-
-    S.LCSE_HUF_per_kWh_saved = T.LCSE_HUF_per_kWh_saved;
-    S.NPV_simulatedPeriod_millionHUF = T.NPV_millionHUF;
-    S.NPV_BESSOnly_simulatedPeriod_millionHUF = T.NPV_BESSOnly_millionHUF;
-    S.Simple_payback_year = T.simplePayback_year;
-    S.Discounted_payback_year = T.discountedPayback_year;
-end
-
-
-function B = local_build_bess_only_table(T, labels)
-
-    B = table();
-    B.Selection = labels(:);
-    B.AxisLabel = local_candidate_axis_labels(T);
-    B.Coupling = T.Coupling;
-    B.candidateIndex = T.candidateIndex;
-    B.E_BESS_kWh = T.E_BESS_kWh;
-    B.P_BESS_kW = T.P_BESS_kW;
-    B.BESS_to_load_MWh_total = T.bessToLoad_kWh ./ 1000;
-    B.BESS_AC_energy_saving_millionHUF = T.reportPeriodBessAcSaving_HUF ./ 1e6;
-    B.BESS_degradation_CAPEX_millionHUF = T.reportPeriodBessDegradation_HUF ./ 1e6;
-    B.BESS_OPEX_millionHUF = T.reportPeriodBessOpex_HUF ./ 1e6;
-    B.BESS_only_net_value_millionHUF = T.reportPeriodBessOnlyNetValue_HUF ./ 1e6;
-end
-
-
-% =========================================================================
-% SELECTED CANDIDATE PLOTS
-% =========================================================================
-function local_plot_value_cost_payback_summary(T, xLabels, figureFolder)
-
-    fig = figure('Name', 'AC/DC selected value cost payback summary', ...
-        'Position', [50, 40, 1550, 1250]);
-
-    tiledlayout(fig, 4, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
-
-    x = 1:height(T);
-
-    ax1 = nexttile;
-    hold(ax1, 'on'); grid(ax1, 'on'); box(ax1, 'on');
-    saving_mHUF = T.reportPeriodCostSaving_HUF ./ 1e6;
-    bar(ax1, x, saving_mHUF, 'BarWidth', 0.65);
-    yline(ax1, 0, 'k-', 'LineWidth', 1.0);
-    ylabel(ax1, 'millio Ft');
-    title(ax1, 'Rendszer hozzaadott erteke - energiakoltseg-megtakaritas a szimulalt idoszakra');
-    local_apply_xlabels(ax1, x, xLabels);
-    local_add_bar_value_labels(ax1, x, saving_mHUF);
-
-    ax2 = nexttile;
-    hold(ax2, 'on'); grid(ax2, 'on'); box(ax2, 'on');
-    costData_mHUF = [ ...
-        T.reportPeriodPVCapex_HUF, ...
-        T.reportPeriodPVOpex_HUF, ...
-        T.reportPeriodInverterCapex_HUF, ...
-        T.reportPeriodInverterOpex_HUF, ...
-        T.reportPeriodBessDegradation_HUF, ...
-        T.reportPeriodBessOpex_HUF] ./ 1e6;
-    bar(ax2, x, costData_mHUF, 'stacked', 'BarWidth', 0.65);
-    ylabel(ax2, 'millio Ft');
-    title(ax2, 'Szimulalt idoszakra allokalt beruhazasi es uzemeltetesi koltsegek');
-    local_apply_xlabels(ax2, x, xLabels);
-    legend(ax2, { ...
-        'PV CAPEX / lifetime', ...
-        'PV OPEX', ...
-        'Inverter CAPEX / lifetime', ...
-        'Inverter OPEX', ...
-        'BESS degradacios CAPEX', ...
-        'BESS OPEX'}, ...
-        'Location', 'bestoutside');
-
-    ax3 = nexttile;
-    hold(ax3, 'on'); grid(ax3, 'on'); box(ax3, 'on');
-    periodNet_mHUF = T.reportPeriodNetValue_HUF ./ 1e6;
-    bar(ax3, x, periodNet_mHUF, 'BarWidth', 0.65);
-    yline(ax3, 0, 'k-', 'LineWidth', 1.0);
-    ylabel(ax3, 'millio Ft');
-    title(ax3, 'Megterulesi ertek a szimulalt idoszakra - pozitiv ertek eseten gazdasagilag kedvezo');
-    local_apply_xlabels(ax3, x, xLabels);
-    local_add_bar_value_labels(ax3, x, periodNet_mHUF);
-
-    ax4 = nexttile;
-    hold(ax4, 'on'); grid(ax4, 'on'); box(ax4, 'on');
-    bessValueStack_mHUF = [ ...
-        T.reportPeriodBessAcSaving_HUF, ...
-        -T.reportPeriodBessDegradation_HUF, ...
-        -T.reportPeriodBessOpex_HUF] ./ 1e6;
-    bar(ax4, x, bessValueStack_mHUF, 'stacked', 'BarWidth', 0.65);
-    bessNet_mHUF = T.reportPeriodBessOnlyNetValue_HUF ./ 1e6;
-    plot(ax4, x, bessNet_mHUF, 'k-o', 'LineWidth', 1.6, 'MarkerSize', 5);
-    yline(ax4, 0, 'k-', 'LineWidth', 1.0);
-    ylabel(ax4, 'millio Ft');
-    title(ax4, 'BESS-only vizsgalat: BESS AC energiaertek - BESS degradacios CAPEX - BESS OPEX');
-    local_apply_xlabels(ax4, x, xLabels);
-    legend(ax4, { ...
-        'BESS -> fogyaszto AC energia megtakaritasa', ...
-        'BESS degradacios CAPEX', ...
-        'BESS OPEX', ...
-        'BESS-only netto ertek'}, ...
-        'Location', 'bestoutside');
-    local_add_bar_value_labels(ax4, x, bessNet_mHUF);
-
-    local_save_figure(fig, figureFolder, 'acdc_selected_value_cost_payback_summary');
-end
-
-
-function local_plot_self_consumption_summary(T, xLabels, figureFolder)
-
-    fig = figure('Name', 'AC/DC selected technical summary', ...
-        'Position', [80, 80, 1400, 900]);
-
-    tiledlayout(fig, 3, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
-
-    x = 1:height(T);
-
-    metrics = { ...
-        'selfConsumption_pct', 'Onfogyasztasi arany', '%'; ...
-        'selfSufficiency_pct', 'Onellatasi arany', '%'; ...
-        'annualBessEquivalentCycles', 'Eves ekvivalens BESS ciklusszam', 'ciklus/ev'};
-
-    for k = 1:size(metrics, 1)
-        ax = nexttile;
-        hold(ax, 'on'); grid(ax, 'on'); box(ax, 'on');
-        fieldName = metrics{k, 1};
-        values = T.(fieldName);
-        bar(ax, x, values, 'BarWidth', 0.65);
-        ylabel(ax, metrics{k, 3});
-        title(ax, metrics{k, 2});
-        local_apply_xlabels(ax, x, xLabels);
-        local_add_bar_value_labels(ax, x, values);
-    end
-
-    local_save_figure(fig, figureFolder, 'acdc_selected_self_consumption_summary');
-end
-
-
-function local_plot_useful_energy_and_losses(T, xLabels, figureFolder)
-
-    fig = figure('Name', 'AC/DC selected useful AC energy and losses', ...
-        'Position', [100, 90, 1500, 800]);
-
-    ax = axes(fig);
-    hold(ax, 'on'); grid(ax, 'on'); box(ax, 'on');
-
-    x = 1:height(T);
-
-    energyData_MWh = [ ...
-        T.reportUsefulACEnergy_MWh, ...
-        T.reportInverterLoss_MWh, ...
-        T.reportDcdcLoss_MWh, ...
-        T.reportBessInternalLoss_MWh, ...
-        T.reportCurtailment_MWh];
-
-    bar(ax, x, energyData_MWh, 'stacked', 'BarWidth', 0.65);
-
-    ylabel(ax, 'MWh / szimulalt idoszak');
-    title(ax, 'Hasznos AC energia es fo vesztesegkomponensek');
-    local_apply_xlabels(ax, x, xLabels);
-
-    legend(ax, { ...
-        'Hasznos AC energia a fogyaszton', ...
-        'Inverter veszteseg', ...
-        'DC/DC veszteseg', ...
-        'BESS cella/belso veszteseg', ...
-        'Curtailment'}, ...
-        'Location', 'bestoutside');
-
-    local_save_figure(fig, figureFolder, 'acdc_selected_useful_energy_and_losses');
-end
-
-
-function local_apply_xlabels(ax, x, xLabels)
-
-    xticks(ax, x);
-    xticklabels(ax, cellstr(xLabels));
-    ax.TickLabelInterpreter = 'none';
-end
-
-
-% =========================================================================
-% HEATMAPS AND 3D PLOTS
-% =========================================================================
-function local_plot_min_inverter_heatmap_pair(T, metricField, metricLabel, metricUnit, direction, figureFolder, fileName)
-
-    if ~ismember(metricField, T.Properties.VariableNames)
-        warning('Missing metric field for heatmap: %s', metricField);
-        return;
-    end
-
-    valid = logical(T.wasSimulated) & ~logical(T.hasError) & ...
-        isfinite(T.P_inv_kW) & isfinite(T.DCAC_ratio) & ...
-        isfinite(T.BESS_PV_ratio) & isfinite(T.(metricField));
-
-    if ~any(valid)
-        warning('No valid data for heatmap: %s.', metricField);
-        return;
-    end
-
-    minInv = min(T.P_inv_kW(valid));
-    invTol = max(1e-9, 1e-6 * max(1, abs(minInv)));
-
-    fig = figure('Name', ['Heatmap min inverter - ', metricField], ...
-        'Position', [80, 80, 1450, 650]);
-
-    tiledlayout(fig, 1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
-
-    couplings = ["dc", "ac"];
-
-    for i = 1:numel(couplings)
-        ax = nexttile;
-        local_plot_single_heatmap(ax, T, couplings(i), minInv, invTol, ...
-            metricField, metricLabel, metricUnit, direction);
-    end
-
-    sgtitle(fig, sprintf('%s - legkisebb invertermeret: %.0f kW', metricLabel, minInv), ...
-        'Interpreter', 'none');
-
-    local_save_figure(fig, figureFolder, fileName);
-end
-
-
-function local_plot_single_heatmap(ax, T, coupling, minInv, invTol, metricField, metricLabel, metricUnit, direction)
-
-    mask = T.Coupling == coupling & abs(T.P_inv_kW - minInv) <= invTol & ...
-        logical(T.wasSimulated) & ~logical(T.hasError) & isfinite(T.(metricField));
-
-    if ~any(mask)
-        axis(ax, 'off');
-        title(ax, sprintf('%s - nincs adat', upper(char(coupling))));
-        return;
-    end
-
-    xVals = unique(T.DCAC_ratio(mask));
-    yVals = unique(T.BESS_PV_ratio(mask));
-
-    Z = NaN(numel(yVals), numel(xVals));
-
-    rowIdx = find(mask).';
-
-    for r = rowIdx
-        ix = find(abs(xVals - T.DCAC_ratio(r)) < 1e-9, 1);
-        iy = find(abs(yVals - T.BESS_PV_ratio(r)) < 1e-9, 1);
-        Z(iy, ix) = T.(metricField)(r);
-    end
-
-    imagesc(ax, xVals, yVals, Z);
-    set(ax, 'YDir', 'normal');
-    hold(ax, 'on');
-    grid(ax, 'on');
-    box(ax, 'on');
-
-    colormap(ax, local_green_yellow_red_colormap(direction, 256));
-    cb = colorbar(ax);
-    cb.Label.String = sprintf('%s [%s]', metricLabel, metricUnit);
-
-    xlabel(ax, 'DC/AC arany [-]');
-    ylabel(ax, 'BESS/PV arany [kWh/kWp]');
-    title(ax, sprintf('%s-csatolt', upper(char(coupling))), 'Interpreter', 'none');
-
-    if numel(Z) <= 120
-        for iy = 1:numel(yVals)
-            for ix = 1:numel(xVals)
-                if isfinite(Z(iy, ix))
-                    text(ax, xVals(ix), yVals(iy), char(local_format_number(Z(iy, ix))), ...
-                        'HorizontalAlignment', 'center', ...
-                        'VerticalAlignment', 'middle', ...
-                        'FontSize', 8, ...
-                        'Color', 'k');
-                end
-            end
-        end
-    end
-
-    local_mark_best_heatmap_point(ax, T(mask, :), metricField, direction);
-end
-
-
-function local_mark_best_heatmap_point(ax, Tsub, metricField, direction)
-
-    values = Tsub.(metricField);
-
-    switch string(direction)
-        case "min"
-            [~, idx] = min(values);
-        case "max"
-            [~, idx] = max(values);
-        otherwise
-            error('Unknown direction: %s', string(direction));
-    end
-
-    plot(ax, Tsub.DCAC_ratio(idx), Tsub.BESS_PV_ratio(idx), 'kp', ...
-        'MarkerSize', 16, ...
-        'MarkerFaceColor', 'w', ...
-        'LineWidth', 1.8);
-end
-
-
-function local_plot_3d_metric(T, metricField, metricLabel, metricUnit, direction, figureFolder, coupling)
-
-    if ~ismember(metricField, T.Properties.VariableNames)
-        warning('Missing metric field for 3D plot: %s', metricField);
-        return;
-    end
-
-    valid = logical(T.wasSimulated) & ~logical(T.hasError) & ...
-        isfinite(T.P_inv_kW) & isfinite(T.DCAC_ratio) & ...
-        isfinite(T.BESS_PV_ratio) & isfinite(T.(metricField));
-
-    if ~any(valid)
-        warning('No valid data for 3D plot: %s.', metricField);
-        return;
-    end
-
-    Tvalid = T(valid, :);
-    values = Tvalid.(metricField);
-
-    switch string(direction)
-        case "min"
-            [~, bestIdx] = min(values);
-        case "max"
-            [~, bestIdx] = max(values);
-        otherwise
-            error('Unknown direction: %s', string(direction));
-    end
-
-    fig = figure('Name', sprintf('%s %s 3D map', upper(char(coupling)), metricField), ...
-        'Position', [80, 80, 1250, 850]);
-
-    ax = axes(fig);
-    hold(ax, 'on'); grid(ax, 'on'); box(ax, 'on');
-
-    scatter3(ax, Tvalid.P_inv_kW, Tvalid.DCAC_ratio, Tvalid.BESS_PV_ratio, ...
-        55, values, 'filled');
-
-    plot3(ax, Tvalid.P_inv_kW(bestIdx), Tvalid.DCAC_ratio(bestIdx), ...
-        Tvalid.BESS_PV_ratio(bestIdx), 'kp', ...
-        'MarkerSize', 18, 'MarkerFaceColor', 'w', 'LineWidth', 2.0);
-
-    text(ax, Tvalid.P_inv_kW(bestIdx), Tvalid.DCAC_ratio(bestIdx), ...
-        Tvalid.BESS_PV_ratio(bestIdx), sprintf('  legjobb: C%d', Tvalid.candidateIndex(bestIdx)), ...
-        'FontWeight', 'bold', 'Interpreter', 'none');
-
-    xlabel(ax, 'Inverter nevleges teljesitmeny [kW]');
-    ylabel(ax, 'DC/AC arany [-]');
-    zlabel(ax, 'BESS/PV arany [kWh/kWp]');
-
-    title(ax, sprintf('%s-csatolt: %s', upper(char(coupling)), metricLabel), ...
-        'Interpreter', 'none');
-
-    cb = colorbar(ax);
-    cb.Label.String = sprintf('%s [%s]', metricLabel, metricUnit);
-    colormap(ax, local_green_yellow_red_colormap(direction, 256));
-    view(ax, 45, 25);
-
-    local_save_figure(fig, figureFolder, sprintf('scatter3_%s_%s', char(coupling), metricField));
-end
-
-
-% =========================================================================
-% GENERIC HELPERS
-% =========================================================================
-function fieldName = local_find_first_existing_field(T, fieldNames)
-
-    fieldName = "";
-
-    for i = 1:numel(fieldNames)
-        if ismember(fieldNames{i}, T.Properties.VariableNames)
-            fieldName = string(fieldNames{i});
-            return;
-        end
-    end
-end
-
-
-function local_add_bar_value_labels(ax, x, values)
-
-    for i = 1:numel(values)
-        if ~isfinite(values(i))
+        if ismember(varName, currentVars)
             continue;
         end
 
-        if values(i) >= 0
-            vAlign = 'bottom';
-        else
-            vAlign = 'top';
-        end
+        if ismember(varName, referenceTable.Properties.VariableNames)
 
-        text(ax, x(i), values(i), ['  ', char(local_format_number(values(i)))], ...
-            'HorizontalAlignment', 'center', ...
-            'VerticalAlignment', vAlign, ...
-            'FontSize', 8);
+            refValue = referenceTable.(varName);
+
+            if isnumeric(refValue) || islogical(refValue)
+                T.(varName) = NaN(height(T), 1);
+            elseif isstring(refValue)
+                T.(varName) = strings(height(T), 1);
+            elseif iscellstr(refValue)
+                T.(varName) = repmat({''}, height(T), 1);
+            elseif isdatetime(refValue)
+                T.(varName) = NaT(height(T), 1);
+            else
+                T.(varName) = strings(height(T), 1);
+            end
+
+        else
+            T.(varName) = NaN(height(T), 1);
+        end
     end
 end
 
 
-function cmap = local_green_yellow_red_colormap(direction, n)
+% =========================================================================
+% COLUMN NORMALIZATION
+% =========================================================================
+function T = local_ensure_required_columns(T)
 
-    if nargin < 2
-        n = 256;
+    if ~ismember('DCAC_ratio', T.Properties.VariableNames)
+        if ismember('dcac_ratio', T.Properties.VariableNames)
+            T.DCAC_ratio = T.dcac_ratio;
+        elseif ismember('P_PV_kW', T.Properties.VariableNames) && ismember('P_inv_kW', T.Properties.VariableNames)
+            T.DCAC_ratio = T.P_PV_kW ./ T.P_inv_kW;
+        else
+            error('DCAC_ratio hianyzik, es nem szamolhato P_PV_kW/P_inv_kW alapjan.');
+        end
     end
 
-    red = [0.85, 0.15, 0.15];
-    yellow = [1.00, 0.90, 0.15];
-    green = [0.15, 0.70, 0.25];
+    if ~ismember('coupling', T.Properties.VariableNames)
+        error('A combinedTable nem tartalmaz coupling mezot. Varhato ertekek: dc, ac.');
+    end
 
-    n1 = floor(n / 2);
-    n2 = n - n1;
+    if ~ismember('NPV_millionHUF', T.Properties.VariableNames) && ismember('NPV_HUF', T.Properties.VariableNames)
+        T.NPV_millionHUF = T.NPV_HUF ./ 1e6;
+    end
+
+    if ~ismember('NPV_BESSOnly_millionHUF', T.Properties.VariableNames) && ismember('NPV_BESSOnly_HUF', T.Properties.VariableNames)
+        T.NPV_BESSOnly_millionHUF = T.NPV_BESSOnly_HUF ./ 1e6;
+    end
+
+    if ~ismember('periodNetValue_millionHUF', T.Properties.VariableNames) && ismember('periodNetValue_HUF', T.Properties.VariableNames)
+        T.periodNetValue_millionHUF = T.periodNetValue_HUF ./ 1e6;
+    end
+
+    if ~ismember('periodNetValue_BESSOnly_millionHUF', T.Properties.VariableNames) && ismember('periodNetValue_BESSOnly_HUF', T.Properties.VariableNames)
+        T.periodNetValue_BESSOnly_millionHUF = T.periodNetValue_BESSOnly_HUF ./ 1e6;
+    end
+
+    required = { ...
+        'candidateIndex', ...
+        'coupling', ...
+        'P_PV_kW', ...
+        'P_inv_kW', ...
+        'E_BESS_kWh', ...
+        'P_BESS_kW', ...
+        'BESS_PV_ratio', ...
+        'DCAC_ratio', ...
+        'NPV_millionHUF', ...
+        'periodNetValue_millionHUF', ...
+        'wasSimulated', ...
+        'hasError'};
+
+    for i = 1:numel(required)
+        if ~ismember(required{i}, T.Properties.VariableNames)
+            error('A combinedTable nem tartalmazza a szukseges mezot: %s', required{i});
+        end
+    end
+end
+
+
+% =========================================================================
+% SELECTION
+% =========================================================================
+function selection = local_select_summary_systems(T)
+
+    valid = logical(T.wasSimulated) & ~logical(T.hasError);
+
+    pvOnlyMask = ...
+        valid & ...
+        T.E_BESS_kWh <= 1e-9 & ...
+        isfinite(T.NPV_millionHUF);
+
+    dcMask = ...
+        valid & ...
+        lower(string(T.coupling)) == "dc" & ...
+        T.E_BESS_kWh > 1e-9 & ...
+        isfinite(T.NPV_millionHUF);
+
+    acMask = ...
+        valid & ...
+        lower(string(T.coupling)) == "ac" & ...
+        T.E_BESS_kWh > 1e-9 & ...
+        isfinite(T.NPV_millionHUF);
+
+    selection = struct();
+
+    selection.pvOnlyIndex = local_pick_best_index(T.NPV_millionHUF, pvOnlyMask, "max");
+    selection.bestDcIndex = local_pick_best_index(T.NPV_millionHUF, dcMask, "max");
+    selection.bestAcIndex = local_pick_best_index(T.NPV_millionHUF, acMask, "max");
+
+    selection.metric = "NPV_millionHUF";
+end
+
+
+function idx = local_pick_best_index(values, mask, direction)
+
+    values = double(values(:));
+    mask = logical(mask(:));
+
+    valid = mask & isfinite(values);
+
+    if ~any(valid)
+        error('Nincs megfelelo candidate a summary tablazathoz.');
+    end
 
     switch string(direction)
+
         case "max"
-            c1 = local_interp_color(red, yellow, n1);
-            c2 = local_interp_color(yellow, green, n2);
+            tmp = values;
+            tmp(~valid) = -inf;
+            [~, idx] = max(tmp);
+
         case "min"
-            c1 = local_interp_color(green, yellow, n1);
-            c2 = local_interp_color(yellow, red, n2);
+            tmp = values;
+            tmp(~valid) = inf;
+            [~, idx] = min(tmp);
+
         otherwise
-            error('Unknown direction: %s', string(direction));
+            error('Ismeretlen direction: %s', string(direction));
+    end
+end
+
+
+function summaryTable = local_create_best_systems_summary_table(T, selection)
+
+    indices = [ ...
+        selection.pvOnlyIndex, ...
+        selection.bestDcIndex, ...
+        selection.bestAcIndex];
+
+    labels = {
+        'Architektúra'
+        'PV névleges teljesítménye'
+        'Inverter névleges teljesítménye'
+        'DC/AC arány'
+        'BESS kapacitása'
+        'BESS teljesítménye'
+        'BESS/PV arány'
+        'Teljes rendszer NPV-je'
+        'BESS hozzáadott értékének NPV-je'
+        'Szimulált időszak nettó értéke'
+        'BESS hozzáadott értéke a szimulált időszakban'
+        'Éves energiaköltség-megtakarítás'
+        'Teljes beruházási költség'
+        'BESS beruházási költség'
+        'Sajátfogyasztási arány'
+        'Önellátási arány'
+        'Nem hasznosított PV energia'
+        'Éves BESS ciklusszám'
+        'Végső SoH'
+        'Statikus megtérülési idő'
+        'Diszkontált megtérülési idő'
+        };
+
+    units = {
+        '-'
+        'kWp'
+        'kW'
+        '-'
+        'kWh'
+        'kW'
+        'kWh/kWp'
+        'millió Ft'
+        'millió Ft'
+        'millió Ft'
+        'millió Ft'
+        'millió Ft/év'
+        'millió Ft'
+        'millió Ft'
+        '%'
+        '%'
+        '%'
+        'db/év'
+        '-'
+        'év'
+        'év'
+        };
+
+    values = strings(numel(labels), 3);
+
+    for c = 1:3
+        idx = indices(c);
+        values(:, c) = local_get_column_values_for_candidate(T, idx);
     end
 
-    cmap = [c1; c2];
+    summaryTable = table();
+
+    summaryTable.Mennyiseg = string(labels);
+    summaryTable.CsakPV = values(:, 1);
+    summaryTable.LegjobbDC = values(:, 2);
+    summaryTable.LegjobbAC = values(:, 3);
+    summaryTable.Mertekegyseg = string(units);
 end
 
 
-function C = local_interp_color(cStart, cEnd, n)
+function values = local_get_column_values_for_candidate(T, idx)
 
-    t = linspace(0, 1, n).';
-    C = (1 - t) .* cStart + t .* cEnd;
+    values = strings(21, 1);
+
+    values(1) = local_get_architecture_label(T, idx);
+
+    values(2) = local_format_value(T.P_PV_kW(idx));
+    values(3) = local_format_value(T.P_inv_kW(idx));
+    values(4) = local_format_value(T.DCAC_ratio(idx));
+    values(5) = local_format_optional_bess_value(T.E_BESS_kWh(idx));
+    values(6) = local_format_optional_bess_value(T.P_BESS_kW(idx));
+    values(7) = local_format_optional_bess_value(T.BESS_PV_ratio(idx));
+
+    values(8) = local_format_existing(T, idx, 'NPV_millionHUF');
+    values(9) = local_format_existing_optional_bess(T, idx, 'NPV_BESSOnly_millionHUF');
+
+    values(10) = local_format_existing(T, idx, 'periodNetValue_millionHUF');
+    values(11) = local_format_existing_optional_bess(T, idx, 'periodNetValue_BESSOnly_millionHUF');
+
+    if ismember('annualEnergySavings_HUF', T.Properties.VariableNames)
+        values(12) = local_format_value(T.annualEnergySavings_HUF(idx) ./ 1e6);
+    else
+        values(12) = "-";
+    end
+
+    if ismember('initialCapex_HUF', T.Properties.VariableNames)
+        values(13) = local_format_value(T.initialCapex_HUF(idx) ./ 1e6);
+    else
+        values(13) = "-";
+    end
+
+    if ismember('capexBESS_HUF', T.Properties.VariableNames)
+        values(14) = local_format_optional_bess_value(T.capexBESS_HUF(idx) ./ 1e6);
+    else
+        values(14) = "-";
+    end
+
+    values(15) = local_format_existing(T, idx, 'selfConsumption_pct');
+    values(16) = local_format_existing(T, idx, 'selfSufficiency_pct');
+    values(17) = local_format_existing(T, idx, 'unusedPV_pct');
+    values(18) = local_format_existing_optional_bess(T, idx, 'annualBessEquivalentCycles');
+    values(19) = local_format_existing_optional_bess(T, idx, 'finalSoH');
+    values(20) = local_format_existing(T, idx, 'simplePayback_year');
+    values(21) = local_format_existing(T, idx, 'discountedPayback_year');
 end
 
 
-function s = local_format_number(x)
+function s = local_format_existing(T, idx, fieldName)
 
-    if ~isfinite(x)
-        if isinf(x)
-            s = "Inf";
-        else
-            s = "NaN";
-        end
+    if ~ismember(fieldName, T.Properties.VariableNames)
+        s = "-";
         return;
     end
 
-    ax = abs(x);
+    s = local_format_value(T.(fieldName)(idx));
+end
 
-    if ax >= 1000
-        s = string(sprintf('%.0f', x));
-    elseif ax >= 100
-        s = string(sprintf('%.1f', x));
-    elseif ax >= 10
-        s = string(sprintf('%.1f', x));
-    elseif ax >= 1
-        s = string(sprintf('%.2f', x));
-    else
-        s = string(sprintf('%.3f', x));
+function label = local_get_architecture_label(T, idx)
+
+    if T.E_BESS_kWh(idx) <= 1e-9
+        label = "Sima napelemes rendszer";
+        return;
+    end
+
+    switch lower(string(T.coupling(idx)))
+
+        case "dc"
+            label = "DC-csatolt PV+BESS rendszer";
+
+        case "ac"
+            label = "AC-csatolt PV+BESS rendszer";
+
+        otherwise
+            label = string(T.coupling(idx));
     end
 end
 
 
-function local_save_figure(fig, figureFolder, fileName)
+function s = local_format_existing_optional_bess(T, idx, fieldName)
 
-    if ~exist(figureFolder, 'dir')
-        mkdir(figureFolder);
+    if T.E_BESS_kWh(idx) <= 1e-9
+        s = "-";
+        return;
     end
 
-    savefig(fig, fullfile(figureFolder, [fileName, '.fig']));
+    s = local_format_existing(T, idx, fieldName);
+end
+
+
+function s = local_format_optional_bess_value(value)
+
+    if ~isfinite(value) || abs(value) <= 1e-9
+        s = "-";
+    else
+        s = local_format_value(value);
+    end
+end
+
+
+function s = local_format_value(value)
+
+    if isstring(value)
+        s = value;
+        return;
+    end
+
+    if ischar(value)
+        s = string(value);
+        return;
+    end
+
+    if ~isfinite(value)
+        s = "-";
+        return;
+    end
+
+    ax = abs(value);
+
+    if ax >= 1000
+        s = string(sprintf('%.0f', value));
+    elseif ax >= 100
+        s = string(sprintf('%.1f', value));
+    elseif ax >= 10
+        s = string(sprintf('%.2f', value));
+    elseif ax >= 1
+        s = string(sprintf('%.3f', value));
+    else
+        s = string(sprintf('%.4f', value));
+    end
+end
+
+
+% =========================================================================
+% FIGURE OUTPUT
+% =========================================================================
+function local_plot_best_systems_summary_table(summaryTable, outputRoot, fileTag)
+
+    nRows = height(summaryTable);
+    nCols = width(summaryTable);
+
+    figW = 1500;
+    figH = max(780, 120 + 34 * nRows);
+
+    fig = figure( ...
+        'Name', 'Best systems summary', ...
+        'Color', 'w', ...
+        'Position', [80, 80, figW, figH]);
+
+    ax = axes(fig);
+    hold(ax, 'on');
+    axis(ax, 'off');
+
+    rowH = 1.0;
+    headerH = 1.15;
+
+    colW = [4.2, 4.0, 4.0, 4.0, 2.0];
+
+    totalW = sum(colW);
+    totalH = headerH + nRows * rowH;
+
+    xlim(ax, [0, totalW]);
+    ylim(ax, [0, totalH]);
+
+    headerColor = [0.12, 0.20, 0.32];
+    headerTextColor = [1, 1, 1];
+
+    labelColor = [0.94, 0.96, 0.98];
+    unitColor = [0.94, 0.96, 0.98];
+
+    pvColor = [0.90, 0.96, 1.00];
+    dcColor = [0.92, 0.98, 0.92];
+    acColor = [1.00, 0.95, 0.90];
+
+    dataColors = {labelColor, pvColor, dcColor, acColor, unitColor};
+
+    varNames = summaryTable.Properties.VariableNames;
+
+    yHeader = totalH - headerH;
+
+    x0 = 0;
+
+    for c = 1:nCols
+
+        rectangle(ax, ...
+            'Position', [x0, yHeader, colW(c), headerH], ...
+            'FaceColor', headerColor, ...
+            'EdgeColor', [1, 1, 1], ...
+            'LineWidth', 1.0);
+
+        text(ax, x0 + colW(c) / 2, yHeader + headerH / 2, ...
+            local_pretty_var_name(varNames{c}), ...
+            'HorizontalAlignment', 'center', ...
+            'VerticalAlignment', 'middle', ...
+            'FontWeight', 'bold', ...
+            'FontSize', 10, ...
+            'Color', headerTextColor, ...
+            'Interpreter', 'none');
+
+        x0 = x0 + colW(c);
+    end
+
+    for r = 1:nRows
+
+        y0 = totalH - headerH - r * rowH;
+
+        x0 = 0;
+
+        for c = 1:nCols
+
+            rectangle(ax, ...
+                'Position', [x0, y0, colW(c), rowH], ...
+                'FaceColor', dataColors{c}, ...
+                'EdgeColor', [0.78, 0.78, 0.78], ...
+                'LineWidth', 0.75);
+
+            rawValue = summaryTable.(varNames{c})(r);
+
+            if isstring(rawValue)
+                textValue = char(rawValue);
+            elseif iscell(rawValue)
+                textValue = char(rawValue{1});
+            else
+                textValue = char(string(rawValue));
+            end
+
+            if c == 1
+                hAlign = 'left';
+                xText = x0 + 0.08;
+                fontWeight = 'bold';
+            else
+                hAlign = 'center';
+                xText = x0 + colW(c) / 2;
+                fontWeight = 'normal';
+            end
+
+            text(ax, xText, y0 + rowH / 2, ...
+                textValue, ...
+                'HorizontalAlignment', hAlign, ...
+                'VerticalAlignment', 'middle', ...
+                'FontSize', 9, ...
+                'FontWeight', fontWeight, ...
+                'Color', [0.05, 0.05, 0.05], ...
+                'Interpreter', 'none');
+
+            x0 = x0 + colW(c);
+        end
+    end
+
+    title(ax, 'Best AC, best DC and PV-only system summary', ...
+        'FontSize', 16, ...
+        'FontWeight', 'bold');
+
+    savefig(fig, fullfile(outputRoot, [fileTag, '.fig']));
 
     try
-        exportgraphics(fig, fullfile(figureFolder, [fileName, '.png']), 'Resolution', 150);
+        exportgraphics(fig, fullfile(outputRoot, [fileTag, '.png']), 'Resolution', 300);
     catch
-        saveas(fig, fullfile(figureFolder, [fileName, '.png']));
+        saveas(fig, fullfile(outputRoot, [fileTag, '.png']));
     end
+
+    try
+        exportgraphics(fig, fullfile(outputRoot, [fileTag, '.pdf']), 'ContentType', 'vector');
+    catch
+    end
+end
+
+
+function s = local_pretty_var_name(varName)
+
+    switch string(varName)
+
+        case "Mennyiseg"
+            s = "Mennyiség";
+
+        case "CsakPV"
+            s = "Sima napelemes rendszer";
+
+        case "LegjobbDC"
+            s = "Legjobb DC-csatolt rendszer";
+
+        case "LegjobbAC"
+            s = "Legjobb AC-csatolt rendszer";
+
+        case "Mertekegyseg"
+            s = "Mértékegység";
+
+        otherwise
+            s = string(varName);
+    end
+end
+
+
+% =========================================================================
+% HTML OUTPUT
+% =========================================================================
+function local_write_best_systems_summary_html(summaryTable, outputRoot, fileTag)
+
+    htmlPath = fullfile(outputRoot, [fileTag, '.html']);
+
+    fid = fopen(htmlPath, 'w');
+
+    if fid < 0
+        error('Nem sikerult megnyitni HTML irasra: %s', htmlPath);
+    end
+
+    cleanupObj = onCleanup(@() fclose(fid));
+
+    varNames = summaryTable.Properties.VariableNames;
+
+    fprintf(fid, '<!DOCTYPE html>\n');
+    fprintf(fid, '<html lang=\"hu\">\n');
+    fprintf(fid, '<head>\n');
+    fprintf(fid, '<meta charset=\"UTF-8\">\n');
+    fprintf(fid, '<title>Best systems summary</title>\n');
+    fprintf(fid, '<style>\n');
+    fprintf(fid, 'body { font-family: Arial, sans-serif; margin: 32px; background: #f5f7fb; color: #111827; }\n');
+    fprintf(fid, 'h1 { color: #111827; }\n');
+    fprintf(fid, 'table { border-collapse: collapse; width: 100%%; background: white; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }\n');
+    fprintf(fid, 'th { background: #1f2937; color: white; padding: 10px; text-align: center; }\n');
+    fprintf(fid, 'td { border: 1px solid #d1d5db; padding: 8px; text-align: center; }\n');
+    fprintf(fid, 'td:first-child { text-align: left; font-weight: bold; background: #f3f4f6; }\n');
+    fprintf(fid, 'td:nth-child(2) { background: #eff6ff; }\n');
+    fprintf(fid, 'td:nth-child(3) { background: #f0fdf4; }\n');
+    fprintf(fid, 'td:nth-child(4) { background: #fff7ed; }\n');
+    fprintf(fid, 'td:last-child { background: #f3f4f6; }\n');
+    fprintf(fid, '</style>\n');
+    fprintf(fid, '</head>\n');
+    fprintf(fid, '<body>\n');
+    fprintf(fid, '<h1>Best AC, best DC and PV-only system summary</h1>\n');
+    fprintf(fid, '<table>\n');
+
+    fprintf(fid, '<tr>');
+    for c = 1:numel(varNames)
+        fprintf(fid, '<th>%s</th>', char(local_pretty_var_name(varNames{c})));
+    end
+    fprintf(fid, '</tr>\n');
+
+    for r = 1:height(summaryTable)
+
+        fprintf(fid, '<tr>');
+
+        for c = 1:numel(varNames)
+
+            rawValue = summaryTable.(varNames{c})(r);
+
+            if isstring(rawValue)
+                valueText = char(rawValue);
+            elseif iscell(rawValue)
+                valueText = char(rawValue{1});
+            else
+                valueText = char(string(rawValue));
+            end
+
+            fprintf(fid, '<td>%s</td>', local_escape_html(valueText));
+        end
+
+        fprintf(fid, '</tr>\n');
+    end
+
+    fprintf(fid, '</table>\n');
+    fprintf(fid, '</body>\n');
+    fprintf(fid, '</html>\n');
+end
+
+
+function escaped = local_escape_html(inputText)
+
+    escaped = char(inputText);
+    escaped = strrep(escaped, '&', '&amp;');
+    escaped = strrep(escaped, '<', '&lt;');
+    escaped = strrep(escaped, '>', '&gt;');
+    escaped = strrep(escaped, '\"', '&quot;');
+    escaped = strrep(escaped, '''', '&#39;');
 end
