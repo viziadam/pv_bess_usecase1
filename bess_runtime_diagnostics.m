@@ -86,7 +86,23 @@ function diag = local_init(data, DB, candidateIndex, design, cfg)
         mkdir(savePath);
     end
 
-    candidateSavePath = fullfile(savePath, sprintf('candidate_%d', candidateIndex));
+    candidateBasePath = fullfile(savePath, sprintf('candidate_%d', candidateIndex));
+
+    if ~isfolder(candidateBasePath)
+        mkdir(candidateBasePath);
+    end
+
+    useUniqueRunFolder = true;
+
+    if isfield(cfg.diagnostics, 'useUniqueRunFolder')
+        useUniqueRunFolder = logical(cfg.diagnostics.useUniqueRunFolder);
+    end
+
+    if useUniqueRunFolder
+        candidateSavePath = local_create_unique_diagnostic_folder(candidateBasePath);
+    else
+        candidateSavePath = candidateBasePath;
+    end
 
     if ~isfolder(candidateSavePath)
         mkdir(candidateSavePath);
@@ -567,30 +583,32 @@ function local_plot_diagnostics(diag, cfg)
     end
 
     % ---------------------------------------------------------------------
-    % A kert uj mukodes:
-    %   - minden napra pontosan egy egyszerusitett abra
-    %   - nincs heti abra
-    %   - nincs kulon napi osszefoglalo abra
+    % Full-horizon voltage summary
     % ---------------------------------------------------------------------
+    plotFullHorizonVoltages = true;
+
     if isfield(cfg, 'diagnostics') && ...
-            isfield(cfg.diagnostics, 'plotEveryDay') && ...
-            cfg.diagnostics.plotEveryDay
-
-        dayList = 1:diag.nDays;
-
-    elseif isfield(cfg, 'diagnostics') && ...
-            isfield(cfg.diagnostics, 'plotDayIndices') && ...
-            ~isempty(cfg.diagnostics.plotDayIndices)
-
-        dayList = cfg.diagnostics.plotDayIndices(:).';
-
-    else
-
-        dayList = 1:diag.nDays;
+            isfield(cfg.diagnostics, 'plotFullHorizonVoltages')
+        plotFullHorizonVoltages = cfg.diagnostics.plotFullHorizonVoltages;
     end
 
-    dayList = unique(dayList);
-    dayList = dayList(dayList >= 1 & dayList <= diag.nDays);
+    if plotFullHorizonVoltages
+        local_plot_full_horizon_voltages(diag, savePath, cfg);
+    end
+
+    % ---------------------------------------------------------------------
+    % Day selection for daily diagnostic plots
+    % ---------------------------------------------------------------------
+    dayList = local_select_diagnostic_days_for_plot(diag, cfg);
+
+    fprintf('\nDiagnostic daily plots:\n');
+    fprintf('  Number of plotted days = %d\n', numel(dayList));
+
+    if ~isempty(dayList)
+        fprintf('  Plotted day indices    = ');
+        fprintf('%d ', dayList);
+        fprintf('\n');
+    end
 
     for i = 1:numel(dayList)
         local_plot_day(diag, dayList(i), savePath, cfg);
@@ -1111,4 +1129,398 @@ function V_pv_mean_V = local_estimate_pv_mpp_voltage_from_groups(V, N)
     end
 
     V_pv_mean_V = mean(M, 2, 'omitnan');
+end
+
+function local_plot_full_horizon_voltages(diag, savePath, cfg)
+
+    S = diag.series;
+
+    if ~isfield(S, 'time_h') || isempty(S.time_h)
+        return;
+    end
+
+    t_day = double(S.time_h(:)) / 24;
+
+    validT = isfinite(t_day);
+
+    if ~any(validT)
+        return;
+    end
+
+    tMin = min(t_day(validT));
+    tMax = max(t_day(validT));
+
+    if tMax <= tMin
+        tMax = tMin + 1;
+    end
+
+    [figureVisible, closeAfterSave] = local_get_figure_options(cfg);
+
+    fig = figure( ...
+        'Color', 'w', ...
+        'Visible', figureVisible, ...
+        'Name', 'Full horizon voltage summary', ...
+        'NumberTitle', 'off', ...
+        'Position', [80, 80, 1500, 950]);
+
+    tiledlayout(3, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+    % ---------------------------------------------------------------------
+    % 1) PV MPP voltage
+    % ---------------------------------------------------------------------
+    nexttile;
+    hold on;
+    grid on;
+
+    didPlot = local_plot_full_signal_if_available( ...
+        t_day, ...
+        S, ...
+        'V_pv_mpp_mean_V', ...
+        'PV MPP feszultseg');
+
+    ylabel('Feszultseg [V]');
+    title('PV oldali MPP feszultseg a teljes horizonton');
+    xlim([tMin tMax]);
+
+    if didPlot
+        legend('Location', 'best');
+    else
+        text(0.5, 0.5, ...
+            'Nincs elerheto PV MPP feszultseg adat', ...
+            'Units', 'normalized', ...
+            'HorizontalAlignment', 'center');
+    end
+
+    % ---------------------------------------------------------------------
+    % 2) DC bus voltage
+    % ---------------------------------------------------------------------
+    nexttile;
+    hold on;
+    grid on;
+
+    didPlot = local_plot_full_signal_if_available( ...
+        t_day, ...
+        S, ...
+        'V_dc_link_V', ...
+        'DC busz feszultseg');
+
+    ylabel('Feszultseg [V]');
+    title('Kozos DC busz feszultseg a teljes horizonton');
+    xlim([tMin tMax]);
+
+    if didPlot
+        legend('Location', 'best');
+    else
+        text(0.5, 0.5, ...
+            'Nincs elerheto DC busz feszultseg adat', ...
+            'Units', 'normalized', ...
+            'HorizontalAlignment', 'center');
+    end
+
+    % ---------------------------------------------------------------------
+    % 3) BESS DC voltage
+    % ---------------------------------------------------------------------
+    nexttile;
+    hold on;
+    grid on;
+
+    didPlotPre = local_plot_full_signal_if_available( ...
+        t_day, ...
+        S, ...
+        'V_pack_pre_V', ...
+        'BESS pack feszultseg - idealis');
+
+    didPlotActual = local_plot_full_signal_if_available( ...
+        t_day, ...
+        S, ...
+        'V_pack_actual_V', ...
+        'BESS pack feszultseg - aktualis');
+
+    xlabel('Ido [nap]');
+    ylabel('Feszultseg [V]');
+    title('BESS DC oldali feszultseg a teljes horizonton');
+    xlim([tMin tMax]);
+
+    if didPlotPre || didPlotActual
+        legend('Location', 'best');
+    else
+        text(0.5, 0.5, ...
+            'Nincs elerheto BESS DC feszultseg adat', ...
+            'Units', 'normalized', ...
+            'HorizontalAlignment', 'center');
+    end
+
+    % ---------------------------------------------------------------------
+    % Save
+    % ---------------------------------------------------------------------
+    if ~isfolder(savePath)
+        mkdir(savePath);
+    end
+
+    saveas(fig, fullfile(savePath, 'full_horizon_voltage_summary.png'));
+
+    if isfield(cfg, 'diagnostics') && ...
+            isfield(cfg.diagnostics, 'saveFigFiles') && ...
+            cfg.diagnostics.saveFigFiles
+
+        savefig(fig, fullfile(savePath, 'full_horizon_voltage_summary.fig'));
+    end
+
+    if closeAfterSave
+        close(fig);
+    else
+        drawnow;
+    end
+end
+
+function folderPath = local_create_unique_diagnostic_folder(candidateBasePath)
+
+    stamp = datestr(now, 'yyyymmdd_HHMMSS_FFF');
+
+    folderName = sprintf('run_%s', stamp);
+    folderPath = fullfile(candidateBasePath, folderName);
+
+    counter = 0;
+
+    while isfolder(folderPath)
+        counter = counter + 1;
+        folderPath = fullfile( ...
+            candidateBasePath, ...
+            sprintf('%s_%03d', folderName, counter));
+    end
+
+    mkdir(folderPath);
+end
+
+function didPlot = local_plot_full_signal_if_available(t_h, S, fieldName, displayName)
+
+    didPlot = false;
+
+    if ~isfield(S, fieldName)
+        return;
+    end
+
+    x = S.(fieldName);
+
+    if isempty(x)
+        return;
+    end
+
+    t_h = double(t_h(:));
+    x = double(x(:));
+
+    N = min(numel(t_h), numel(x));
+
+    if N == 0
+        return;
+    end
+
+    t_h = t_h(1:N);
+    x = x(1:N);
+
+    valid = isfinite(t_h) & isfinite(x);
+
+    if ~any(valid)
+        return;
+    end
+
+    plot(t_h(valid), x(valid), ...
+        'LineWidth', 1.2, ...
+        'DisplayName', displayName);
+
+    didPlot = true;
+end
+
+function dayList = local_select_diagnostic_days_for_plot(diag, cfg)
+
+    % ---------------------------------------------------------------------
+    % 1) Explicit manual override
+    % ---------------------------------------------------------------------
+    % Ha kezzel megadod a napokat, akkor ez legyen az elso prioritas.
+    if isfield(cfg, 'diagnostics') && ...
+            isfield(cfg.diagnostics, 'plotDayIndices') && ...
+            ~isempty(cfg.diagnostics.plotDayIndices)
+
+        dayList = cfg.diagnostics.plotDayIndices(:).';
+        dayList = unique(dayList);
+        dayList = dayList(dayList >= 1 & dayList <= diag.nDays);
+        return;
+    end
+
+    % ---------------------------------------------------------------------
+    % 2) Plot every day only if explicitly requested
+    % ---------------------------------------------------------------------
+    if isfield(cfg, 'diagnostics') && ...
+            isfield(cfg.diagnostics, 'plotEveryDay') && ...
+            cfg.diagnostics.plotEveryDay
+
+        dayList = 1:diag.nDays;
+        return;
+    end
+
+    % ---------------------------------------------------------------------
+    % 3) Daily table
+    % ---------------------------------------------------------------------
+    if isfield(diag, 'dailyTable') && ~isempty(diag.dailyTable)
+        D = diag.dailyTable;
+    else
+        D = local_daily_table(diag);
+    end
+
+    if isempty(D) || height(D) == 0
+        dayList = [];
+        return;
+    end
+
+    % ---------------------------------------------------------------------
+    % 4) Days with meaningful BESS charging
+    % ---------------------------------------------------------------------
+    minBessChargeEnergy_kWh = 0.1;
+
+    if isfield(cfg, 'diagnostics') && ...
+            isfield(cfg.diagnostics, 'minBessChargeEnergy_kWh')
+
+        minBessChargeEnergy_kWh = cfg.diagnostics.minBessChargeEnergy_kWh;
+    end
+
+    maxDiagnosticDaysToPlot = 12;
+
+    if isfield(cfg, 'diagnostics') && ...
+            isfield(cfg.diagnostics, 'maxDiagnosticDaysToPlot')
+
+        maxDiagnosticDaysToPlot = cfg.diagnostics.maxDiagnosticDaysToPlot;
+    end
+
+    bessChargeDayList = [];
+
+    if ismember('pvToBess_kWh', D.Properties.VariableNames)
+
+        chargeEnergy = D.pvToBess_kWh;
+        chargeEnergy(~isfinite(chargeEnergy)) = 0;
+
+        chargeMask = chargeEnergy > minBessChargeEnergy_kWh;
+
+        if any(chargeMask)
+
+            candidateDays = D.dayIndex(chargeMask);
+            candidateEnergy = chargeEnergy(chargeMask);
+
+            [~, order] = sort(candidateEnergy, 'descend');
+
+            if isfinite(maxDiagnosticDaysToPlot) && maxDiagnosticDaysToPlot > 0
+                order = order(1:min(numel(order), maxDiagnosticDaysToPlot));
+            end
+
+            bessChargeDayList = candidateDays(order);
+            bessChargeDayList = bessChargeDayList(:).';
+        end
+    end
+
+    % ---------------------------------------------------------------------
+    % 5) Low-PV days
+    % ---------------------------------------------------------------------
+    includeLowPvDays = true;
+
+    if isfield(cfg, 'diagnostics') && ...
+            isfield(cfg.diagnostics, 'includeLowPvDays')
+
+        includeLowPvDays = cfg.diagnostics.includeLowPvDays;
+    end
+
+    nLowPvDaysToPlot = 3;
+
+    if isfield(cfg, 'diagnostics') && ...
+            isfield(cfg.diagnostics, 'nLowPvDaysToPlot')
+
+        nLowPvDaysToPlot = cfg.diagnostics.nLowPvDaysToPlot;
+    end
+
+    lowPvMinEnergy_kWh = 0.0;
+
+    if isfield(cfg, 'diagnostics') && ...
+            isfield(cfg.diagnostics, 'lowPvMinEnergy_kWh')
+
+        lowPvMinEnergy_kWh = cfg.diagnostics.lowPvMinEnergy_kWh;
+    end
+
+    lowPvDayList = [];
+
+    if includeLowPvDays && nLowPvDaysToPlot > 0
+
+        if ismember('pvAvailable_kWh', D.Properties.VariableNames)
+
+            pvEnergy = D.pvAvailable_kWh;
+            pvEnergy(~isfinite(pvEnergy)) = NaN;
+
+            validPvMask = isfinite(pvEnergy) & pvEnergy >= lowPvMinEnergy_kWh;
+
+            if any(validPvMask)
+
+                candidateDays = D.dayIndex(validPvMask);
+                candidatePvEnergy = pvEnergy(validPvMask);
+
+                [~, order] = sort(candidatePvEnergy, 'ascend');
+
+                order = order(1:min(numel(order), nLowPvDaysToPlot));
+
+                lowPvDayList = candidateDays(order);
+                lowPvDayList = lowPvDayList(:).';
+            end
+        end
+    end
+
+    % ---------------------------------------------------------------------
+    % 6) Merge day lists
+    % ---------------------------------------------------------------------
+    dayList = [bessChargeDayList, lowPvDayList];
+
+    dayList = unique(dayList);
+    dayList = dayList(dayList >= 1 & dayList <= diag.nDays);
+    dayList = sort(dayList);
+
+    % ---------------------------------------------------------------------
+    % 7) Console information
+    % ---------------------------------------------------------------------
+    fprintf('\nDiagnostic day selection:\n');
+
+    fprintf('  BESS charging days selected = %d\n', numel(bessChargeDayList));
+    if ~isempty(bessChargeDayList)
+        fprintf('  BESS charging day indices   = ');
+        fprintf('%d ', bessChargeDayList);
+        fprintf('\n');
+    end
+
+    fprintf('  Low-PV days selected        = %d\n', numel(lowPvDayList));
+    if ~isempty(lowPvDayList)
+        fprintf('  Low-PV day indices          = ');
+        fprintf('%d ', lowPvDayList);
+        fprintf('\n');
+    end
+
+    fprintf('  Total unique plotted days   = %d\n', numel(dayList));
+    if ~isempty(dayList)
+        fprintf('  Final plotted day indices   = ');
+        fprintf('%d ', dayList);
+        fprintf('\n');
+    end
+end
+
+function [figureVisible, closeAfterSave] = local_get_figure_options(cfg)
+
+    showFigures = false;
+    closeAfterSave = true;
+
+    if isfield(cfg, 'diagnostics') && isfield(cfg.diagnostics, 'showFigures')
+        showFigures = cfg.diagnostics.showFigures;
+    end
+
+    if isfield(cfg, 'diagnostics') && isfield(cfg.diagnostics, 'closeFiguresAfterSave')
+        closeAfterSave = cfg.diagnostics.closeFiguresAfterSave;
+    end
+
+    if showFigures
+        figureVisible = 'on';
+    else
+        figureVisible = 'off';
+    end
 end

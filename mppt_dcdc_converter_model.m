@@ -89,6 +89,8 @@ function [out, pvGroupsOut] = mppt_dcdc_converter_model(pvGroupsIn, V_dc_link_V,
             V_out_V > 0 & ...
             V_in_V >= pars.VinMin_V & ...
             V_in_V <= pars.VinMax_V & ...
+            V_out_V >= pars.VoutMin_V & ...
+            V_out_V <= pars.VoutMax_V & ...
             voltageRatio >= pars.ratioMin & ...
             voltageRatio <= pars.ratioMax;
 
@@ -202,22 +204,28 @@ end
 function pars = local_apply_default_pars(pars)
 
     pars = local_set_default(pars, 'loadFractionCurve', ...
-        [0.00 0.05 0.10 0.20 0.50 0.75 1.00]);
+        [0.00 0.01 0.02 0.05 0.10 0.20 0.50 0.75 1.00]);
 
     pars = local_set_default(pars, 'etaLoadCurve', ...
-        [0.00 0.86 0.91 0.95 0.975 0.982 0.980]);
+        [0.00 0.80 0.90 0.94 0.960 0.972 0.982 0.985 0.980]);
 
     pars = local_set_default(pars, 'voltageRatioCurve', ...
-        [0.50 0.65 0.80 1.00 1.20 1.50 2.00]);
+        [0.35 0.50 0.65 0.80 0.90 1.00 1.10 1.25 1.50 2.00 2.50 3.00]);
 
     pars = local_set_default(pars, 'etaVoltageCurve', ...
-        [0.955 0.965 0.975 0.985 0.980 0.970 0.955]);
+        [0.955 0.970 0.982 0.992 0.997 1.000 0.997 0.993 0.985 0.972 0.960 0.950]);
+
+    pars = local_set_default(pars, 'etaMin', 0.00);
+    pars = local_set_default(pars, 'etaMax', 0.985);
 
     pars = local_set_default(pars, 'etaMin', 0.00);
     pars = local_set_default(pars, 'etaMax', 0.985);
 
     pars = local_set_default(pars, 'VinMin_V', 100);
     pars = local_set_default(pars, 'VinMax_V', 1500);
+
+    pars = local_set_default(pars, 'VoutMin_V', 500);
+    pars = local_set_default(pars, 'VoutMax_V', 1000);
 
     pars = local_set_default(pars, 'IinMax_A', inf);
     pars = local_set_default(pars, 'IoutMax_A', inf);

@@ -64,21 +64,39 @@ function [step, stateEnd] = dccoupled_energy_strategy_vector(P_pv_dc_kW, P_load_
 
     V_pack_pre_V = local_estimate_pack_voltage_before_step(bess_state, cfg, N);
 
-    V_dc_link_V = local_get_dc_link_voltage( ...
-        cfg, ...
-        design, ...
-        N, ...
-        pvGroups, ...
-        V_pack_pre_V);
+    usePvMpptDcdc = local_use_pv_mppt_dcdc(cfg);
+
+    V_pv_mpp_mean_V = local_estimate_pv_mpp_voltage_timeseries(pvGroups, N);
+
+    if usePvMpptDcdc
+
+        V_dc_link_V = local_get_dc_link_voltage( ...
+            cfg, ...
+            design, ...
+            N, ...
+            pvGroups, ...
+            V_pack_pre_V);
+
+    else
+
+        V_dc_link_V = local_get_dc_link_voltage_without_pv_dcdc( ...
+            cfg, ...
+            design, ...
+            V_pv_mpp_mean_V, ...
+            N);
+    end
 
     % ---------------------------------------------------------------------
     % 2) PV MPPT DC/DC conversion to common DC-link
     % ---------------------------------------------------------------------
-    if isempty(pvGroups)
+    if ~usePvMpptDcdc
 
-        % Fallback:
-        % If no orientation-specific MPPT groups are available, keep the old
-        % behavior: PV MPP power is directly available on the DC-link.
+        % ---------------------------------------------------------------------
+        % PV MPPT DC/DC nelkuli eset
+        % ---------------------------------------------------------------------
+        % Ilyenkor a PV oldal kozvetlenul a kozos DC buszra dolgozik.
+        % A DC busz feszultsege a PV/string MPP feszultsegbol szarmazik,
+        % a PV oldali DC/DC veszteseg es clipping nulla.
         P_pv_mpp_total_kW = P_pv_dc_kW;
         P_pv_dc_link_kW = P_pv_dc_kW;
 
@@ -88,9 +106,37 @@ function [step, stateEnd] = dccoupled_energy_strategy_vector(P_pv_dc_kW, P_load_
 
         pvDcdc = struct();
         pvDcdc.groups = [];
+        pvDcdc.P_mpp_total_kW = P_pv_mpp_total_kW;
+        pvDcdc.P_input_limited_total_kW = P_pv_mpp_total_kW;
+        pvDcdc.P_dc_link_total_kW = P_pv_dc_link_kW;
+        pvDcdc.P_loss_total_kW = P_pv_dcdc_conversion_loss_kW;
+        pvDcdc.P_clipped_total_kW = P_pv_dcdc_power_clipped_kW;
+
+    elseif isempty(pvGroups)
+
+        % ---------------------------------------------------------------------
+        % Fallback, ha nincs orientacio / MPPT csoport adat
+        % ---------------------------------------------------------------------
+        P_pv_mpp_total_kW = P_pv_dc_kW;
+        P_pv_dc_link_kW = P_pv_dc_kW;
+
+        P_pv_dcdc_conversion_loss_kW = zeros(N, 1);
+        P_pv_dcdc_power_clipped_kW = zeros(N, 1);
+        P_pv_mppt_balance_error_kW = zeros(N, 1);
+
+        pvDcdc = struct();
+        pvDcdc.groups = [];
+        pvDcdc.P_mpp_total_kW = P_pv_mpp_total_kW;
+        pvDcdc.P_input_limited_total_kW = P_pv_mpp_total_kW;
+        pvDcdc.P_dc_link_total_kW = P_pv_dc_link_kW;
+        pvDcdc.P_loss_total_kW = P_pv_dcdc_conversion_loss_kW;
+        pvDcdc.P_clipped_total_kW = P_pv_dcdc_power_clipped_kW;
 
     else
 
+        % ---------------------------------------------------------------------
+        % PV MPPT DC/DC-s eset
+        % ---------------------------------------------------------------------
         mpptPars = local_get_mppt_dcdc_pars(cfg);
 
         [pvDcdc, pvGroups] = mppt_dcdc_converter_model( ...
@@ -337,8 +383,23 @@ function [step, stateEnd] = dccoupled_energy_strategy_vector(P_pv_dc_kW, P_load_
 
     % DC bus
     step.V_dc_link_V = V_dc_link_V(:);
+    step.V_pv_mpp_mean_V = V_pv_mpp_mean_V(:);
     step.V_pack_pre_V = V_pack_pre_V(:);
     step.V_pack_actual_V = V_pack_actual_V(:);
+
+    step.usePvMpptDcdc = usePvMpptDcdc;
+
+    % PV MPPT oldali reprezentativ bemeneti feszultseg.
+    % Ez az MPPT DC/DC bemeneti oldalan ertelmezett PV/string MPP feszultseg.
+    if exist('pvDcdc', 'var') && isfield(pvDcdc, 'groups') && ~isempty(pvDcdc.groups)
+        step.V_pv_mpp_mean_V = local_group_power_weighted_mean_signal( ...
+            pvDcdc.groups, ...
+            'V_in_V', ...
+            'P_mpp_in_kW', ...
+            numel(P_load_ac_kW));
+    else
+        step.V_pv_mpp_mean_V = NaN(numel(P_load_ac_kW), 1);
+    end
 
     % PV MPPT DC/DC
     step.pvGroups = pvGroups;
@@ -446,13 +507,19 @@ function [step, stateEnd] = dccoupled_energy_strategy_vector(P_pv_dc_kW, P_load_
         step.inverter_loadFraction = NaN(size(P_load_ac_kW));
     end
 
-    if exist('pvDcdc', 'var') && isfield(pvDcdc, 'P_dc_link_total_kW') && ...
-            isfield(pvDcdc, 'P_input_limited_total_kW')
+    if ~usePvMpptDcdc
+
+        step.eta_pv_mppt_dcdc = ones(size(P_load_ac_kW));
+
+    elseif exist('pvDcdc', 'var') && isfield(pvDcdc, 'P_dc_link_total_kW') && ...
+        isfield(pvDcdc, 'P_input_limited_total_kW')
 
         step.eta_pv_mppt_dcdc = local_safe_divide_vector( ...
             pvDcdc.P_dc_link_total_kW(:), ...
             pvDcdc.P_input_limited_total_kW(:));
+
     else
+
         step.eta_pv_mppt_dcdc = NaN(size(P_load_ac_kW));
     end
 
@@ -860,4 +927,153 @@ function y = local_group_mean_signal(groups, fieldName, N)
     end
 
     y = mean(M, 2, 'omitnan');
+end
+
+function y = local_group_power_weighted_mean_signal(groups, valueField, weightField, N)
+
+    yNumerator = zeros(N, 1);
+    yDenominator = zeros(N, 1);
+
+    for g = 1:numel(groups)
+
+        if ~isfield(groups(g), valueField) || isempty(groups(g).(valueField))
+            continue;
+        end
+
+        x = local_fit_vector(groups(g).(valueField), N, NaN);
+
+        if isfield(groups(g), weightField) && ~isempty(groups(g).(weightField))
+            w = local_fit_vector(groups(g).(weightField), N, 0);
+        else
+            w = ones(N, 1);
+        end
+
+        x = double(x(:));
+        w = double(w(:));
+
+        valid = isfinite(x) & isfinite(w) & w > 0;
+
+        yNumerator(valid) = yNumerator(valid) + x(valid) .* w(valid);
+        yDenominator(valid) = yDenominator(valid) + w(valid);
+    end
+
+    y = NaN(N, 1);
+
+    validOut = yDenominator > 0;
+    y(validOut) = yNumerator(validOut) ./ yDenominator(validOut);
+end
+
+function usePvMpptDcdc = local_use_pv_mppt_dcdc(cfg)
+
+    % Alapertelmezett: hasznalunk PV oldali MPPT DC/DC-t.
+    usePvMpptDcdc = true;
+
+    % Javasolt config:
+    %   cfg.mpptDcdc.enabled = true/false
+    if isfield(cfg, 'mpptDcdc') && isfield(cfg.mpptDcdc, 'enabled')
+        usePvMpptDcdc = logical(cfg.mpptDcdc.enabled);
+        return;
+    end
+
+    % Alternativ alias, ha kesobb inkabb PV szintre akarod tenni:
+    %   cfg.pv.useMpptDcdc = true/false
+    if isfield(cfg, 'pv') && isfield(cfg.pv, 'useMpptDcdc')
+        usePvMpptDcdc = logical(cfg.pv.useMpptDcdc);
+        return;
+    end
+
+    % Alternativ architektura-szintu alias:
+    %   cfg.dcCoupled.usePvMpptDcdc = true/false
+    if isfield(cfg, 'dcCoupled') && isfield(cfg.dcCoupled, 'usePvMpptDcdc')
+        usePvMpptDcdc = logical(cfg.dcCoupled.usePvMpptDcdc);
+        return;
+    end
+end
+
+function V_pv_mpp_mean_V = local_estimate_pv_mpp_voltage_timeseries(pvGroups, N)
+
+    V_num = zeros(N, 1);
+    V_den = zeros(N, 1);
+
+    if isempty(pvGroups)
+        V_pv_mpp_mean_V = NaN(N, 1);
+        return;
+    end
+
+    for g = 1:numel(pvGroups)
+
+        group = pvGroups(g);
+
+        if isfield(group, 'V_string_mpp_V') && ~isempty(group.V_string_mpp_V)
+
+            Vg = local_fit_vector(group.V_string_mpp_V, N, NaN);
+
+        elseif isfield(group, 'V_mpp_module_V') && ~isempty(group.V_mpp_module_V)
+
+            if isfield(group, 'Ns') && ~isempty(group.Ns) && ...
+                    isnumeric(group.Ns) && isscalar(group.Ns) && isfinite(group.Ns)
+                Ns = group.Ns;
+            else
+                Ns = 24;
+            end
+
+            Vg = Ns * local_fit_vector(group.V_mpp_module_V, N, NaN);
+
+        else
+
+            continue;
+        end
+
+        if isfield(group, 'P_mppt_in_kW') && ~isempty(group.P_mppt_in_kW)
+            Pg = local_fit_vector(group.P_mppt_in_kW, N, 0);
+
+        elseif isfield(group, 'P_orientation_available_kW') && ~isempty(group.P_orientation_available_kW)
+            Pg = local_fit_vector(group.P_orientation_available_kW, N, 0);
+
+        elseif isfield(group, 'P_orientation_ref_kW') && ~isempty(group.P_orientation_ref_kW)
+            Pg = local_fit_vector(group.P_orientation_ref_kW, N, 0);
+
+        else
+            Pg = ones(N, 1);
+        end
+
+        Vg = double(Vg(:));
+        Pg = double(Pg(:));
+
+        valid = isfinite(Vg) & Vg > 0 & isfinite(Pg) & Pg > 0;
+
+        V_num(valid) = V_num(valid) + Vg(valid) .* Pg(valid);
+        V_den(valid) = V_den(valid) + Pg(valid);
+    end
+
+    V_pv_mpp_mean_V = NaN(N, 1);
+
+    validOut = V_den > 0;
+    V_pv_mpp_mean_V(validOut) = V_num(validOut) ./ V_den(validOut);
+end
+
+function V_dc_link_V = local_get_dc_link_voltage_without_pv_dcdc(cfg, design, V_pv_mpp_mean_V, N)
+
+    V_pv_mpp_mean_V = local_fit_vector(V_pv_mpp_mean_V, N, NaN);
+    V_dc_link_V = double(V_pv_mpp_mean_V(:));
+
+    % Fallback feszultseg ejszakara / hianyzo PV feszultsegre.
+    V_fallback = [];
+
+    if isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'noMpptFallback_V')
+        V_fallback = cfg.dcBus.noMpptFallback_V;
+    end
+
+    if isempty(V_fallback) || ...
+            ~isnumeric(V_fallback) || ...
+            ~isscalar(V_fallback) || ...
+            ~isfinite(V_fallback) || ...
+            V_fallback <= 0
+
+        V_fallback = local_get_fixed_dc_link_voltage(cfg, design);
+    end
+
+    invalid = ~isfinite(V_dc_link_V) | V_dc_link_V <= 0;
+
+    V_dc_link_V(invalid) = V_fallback;
 end

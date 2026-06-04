@@ -107,136 +107,169 @@ function cfg = create_configurations(basePath)
     % ---------------------------------------------------------------------
     % DC bus configuration
     % ---------------------------------------------------------------------
+    % ---------------------------------------------------------------------
+    % DC bus configuration - 1000 V class system
+    % ---------------------------------------------------------------------
     % The DC bus is treated as a regulated stiff DC-link.
     %
-    % controlMode:
-    %   "fixed"        : use cfg.dcBus.V_ref_V
-    %   "auto_optimal" : select the DC bus voltage from a candidate vector
-    %                    based on inverter, PV DC/DC and BESS DC/DC criteria.
-    cfg.dcBus.controlMode = "auto_optimal";
+    % For this case study we keep a 1000 V DC-link architecture.
+    % The device voltage windows are defined separately for the inverter,
+    % PV MPPT DC/DC and BESS bidirectional DC/DC.
+    cfg.dcBus.controlMode = "fixed";
 
-    % Fallback / fixed value
+    cfg.dcBus.noMpptFallback_V = 1000;
+
     cfg.dcBus.V_ref_V = 1000;
+    cfg.dcBus.V_candidate_vec_V = 900:25:1000;
 
-    % Candidate range for automatic DC-link voltage selection
-    cfg.dcBus.V_candidate_vec_V = 700:25:1200;
-
-    % Inverter preferred DC-link voltage
     cfg.dcBus.inverterPreferred_V = 1000;
 
-    % Weights in the automatic DC bus selection objective
     cfg.dcBus.weightInverter = 0.50;
     cfg.dcBus.weightPvDcdc = 0.30;
     cfg.dcBus.weightBessDcdc = 0.20;
 
     % ---------------------------------------------------------------------
-    % PV string configuration
+    % PV module and string configuration - 1000 V class system
     % ---------------------------------------------------------------------
-    % Number of modules in series per PV string.
-    % Example:
-    %   24 * 41.5 V ~= 996 V string MPP voltage at STC.
+    cfg.pv.modulePower_kWp = 0.715;
+
+    % 1000 V-os rendszerhez nem celszeru a string MPP feszultseget
+    % tul kozel vinni az 1000 V-os maximumhoz.
+    %
+    % Tipikus nagy teljesitmenyu modulnal:
+    %   V_mpp_module ~= 41...42 V
+    %   20 modul sorban ~= 820...840 V string MPP
     cfg.pv.Ns = 24;
 
-    % ---------------------------------------------------------------------
-    % PV MPPT DC/DC converter model
-    % ---------------------------------------------------------------------
-    % Efficiency model:
-    %   eta = eta_load(P/P_rated) * eta_voltage(Uin/Uout)
-    %
-    % For PV MPPT DC/DC:
-    %   Uin  = V_string_mpp
-    %   Uout = V_dc_link
-    cfg.mpptDcdc.loadFractionCurve = [0.00 0.05 0.10 0.20 0.50 0.75 1.00];
-    cfg.mpptDcdc.etaLoadCurve      = [0.00 0.86 0.91 0.95 0.975 0.982 0.980];
+    cfg.pv.enforceIntegerStrings = true;
+    cfg.pv.stringRoundingMode = "round";
 
-    cfg.mpptDcdc.voltageRatioCurve = [0.50 0.65 0.80 1.00 1.20 1.50 2.00];
-    cfg.mpptDcdc.etaVoltageCurve   = [0.955 0.965 0.975 0.985 0.980 0.970 0.955];
+        % ---------------------------------------------------------------------
+    % PV MPPT DC/DC converter model - 1000 V class DC optimizer
+    % ---------------------------------------------------------------------
+    % Function:
+    %   PV string MPP voltage -> regulated common DC bus
+    %
+    % Interpretation:
+    %   Uin  = PV string MPP voltage
+    %   Uout = common DC-link voltage
+    %
+    % The efficiency values are high because this represents a PV-side
+    % DC optimizer / MPPT DC/DC, not the BESS battery converter.
+    cfg.mpptDcdc.enabled = false;
+    cfg.mpptDcdc.loadFractionCurve = ...
+        [0.00 0.02 0.05 0.10 0.20 0.50 0.75 1.00];
+
+    cfg.mpptDcdc.etaLoadCurve = ...
+        [0.00 0.985 0.992 0.994 0.995 0.9955 0.995 0.994];
+
+    % Voltage-ratio correction factor, not a second absolute efficiency.
+    % ratio = Uin / Uout = V_pv_mpp / V_dc_link
+    cfg.mpptDcdc.voltageRatioCurve = ...
+        [0.30 0.50 0.65 0.80 0.90 1.00 1.10 1.25];
+
+    cfg.mpptDcdc.etaVoltageCurve = ...
+        [0.985 0.992 0.996 0.999 1.000 1.000 0.998 0.995];
 
     cfg.mpptDcdc.etaMin = 0.00;
-    cfg.mpptDcdc.etaMax = 0.985;
+    cfg.mpptDcdc.etaMax = 0.9955;
 
-    cfg.mpptDcdc.VinMin_V = 100;
-    cfg.mpptDcdc.VinMax_V = 1500;
+    % 1000 V-os PV DC optimizer / MPPT DC/DC feszultsegtartomany.
+    cfg.mpptDcdc.VinMin_V = 300;
+    cfg.mpptDcdc.VinMax_V = 1000;
 
+    cfg.mpptDcdc.VoutMin_V = 500;
+    cfg.mpptDcdc.VoutMax_V = 1000;
+
+    % Ezeket aggregalt MPPT-csoportkent kezeljuk, ezert nem egyetlen
+    % fizikai optimizer 50 A-es aramkorlatat hasznaljuk itt.
     cfg.mpptDcdc.IinMax_A = inf;
     cfg.mpptDcdc.IoutMax_A = inf;
 
-    % Allowed voltage conversion ratio:
-    %   ratio = Uin / Uout = V_string_mpp / V_dc_link
     cfg.mpptDcdc.ratioMin = min(cfg.mpptDcdc.voltageRatioCurve);
     cfg.mpptDcdc.ratioMax = max(cfg.mpptDcdc.voltageRatioCurve);
 
     % ---------------------------------------------------------------------
-    % BESS bidirectional buck-boost DC/DC converter model
+    % BESS bidirectional DC/DC converter model - 500...1500 V ports
     % ---------------------------------------------------------------------
-    % Efficiency model:
-    %   eta = eta_load(P/P_rated) * eta_voltage(Uin/Uout)
+    % Function:
+    %   BESS rack/string <-> common DC bus
     %
-    % For BESS DC/DC:
-    %   discharge:
-    %       Uin  = V_pack
-    %       Uout = V_dc_link
+    % Interpretation:
+    %   high side = common DC bus side
+    %   low side  = BESS rack / battery side
     %
-    %   charge:
-    %       Uin  = V_dc_link
-    %       Uout = V_pack
-    cfg.bessDcdc.loadFractionCurve = [0.00 0.05 0.10 0.20 0.50 0.75 1.00];
-    cfg.bessDcdc.etaLoadCurve      = [0.00 0.82 0.88 0.93 0.965 0.972 0.970];
+    % The converter voltage range is intentionally wider than the selected
+    % 1000 V operating point, because such units can be suitable for both
+    % 1000 V and 1500 V class DC systems.
+    cfg.bessDcdc.loadFractionCurve = ...
+        [0.00 0.01 0.02 0.05 0.10 0.20 0.50 0.75 1.00];
 
-    cfg.bessDcdc.voltageRatioCurve = [0.35 0.50 0.65 0.80 1.00 1.25 1.50 2.00 2.50 3.00];
-    cfg.bessDcdc.etaVoltageCurve   = [0.920 0.940 0.955 0.965 0.975 0.970 0.962 0.950 0.935 0.920];
+    % Load-dependent absolute efficiency.
+    % The curve is built from a realistic average/peak behaviour:
+    %   - weak operation at very low part load,
+    %   - good operation above 10...20% loading,
+    %   - peak around mid/high load.
+    cfg.bessDcdc.etaLoadCurve = ...
+        [0.00 0.80 0.90 0.94 0.960 0.972 0.982 0.985 0.980];
+
+    % Voltage-ratio correction factor.
+    % ratio = Uin / Uout
+    % discharge: Uin = V_bess, Uout = V_dc_link
+    % charge:    Uin = V_dc_link, Uout = V_bess
+    cfg.bessDcdc.voltageRatioCurve = ...
+        [0.35 0.50 0.65 0.80 0.90 1.00 1.10 1.25 1.50 2.00 2.50 3.00];
+
+    cfg.bessDcdc.etaVoltageCurve = ...
+        [0.955 0.970 0.982 0.992 0.997 1.000 0.997 0.993 0.985 0.972 0.960 0.950];
 
     cfg.bessDcdc.etaMin = 0.00;
-    cfg.bessDcdc.etaMax = 0.975;
+    cfg.bessDcdc.etaMax = 0.985;
 
-    cfg.bessDcdc.VhighMin_V = 700;    % DC bus side
-    cfg.bessDcdc.VhighMax_V = 1200;
+    % Converter voltage windows.
+    % High side: common DC bus side.
+    cfg.bessDcdc.VhighNom_V = 1000;
+    cfg.bessDcdc.VhighMin_V = 500;
+    cfg.bessDcdc.VhighMax_V = 1500;
 
-    cfg.bessDcdc.VlowMin_V = 600;     % BESS side
-    cfg.bessDcdc.VlowMax_V = 1050;
+    % Low side: BESS rack / pack side.
+    cfg.bessDcdc.VlowNom_V = 864;
+    cfg.bessDcdc.VlowMin_V = 500;
+    cfg.bessDcdc.VlowMax_V = 1500;
 
     cfg.bessDcdc.IhighMax_A = inf;
     cfg.bessDcdc.IlowMax_A = inf;
 
-    % Allowed voltage conversion ratio:
-    %   ratio = Uin / Uout
     cfg.bessDcdc.ratioMin = min(cfg.bessDcdc.voltageRatioCurve);
     cfg.bessDcdc.ratioMax = max(cfg.bessDcdc.voltageRatioCurve);
 
-    % Optional small difference between charge and discharge direction
-    cfg.bessDcdc.etaChargeFactor = 0.995;
+    cfg.bessDcdc.etaChargeFactor = 0.997;
     cfg.bessDcdc.etaDischargeFactor = 1.000;
-
-        % ---------------------------------------------------------------------
-    % Inverter efficiency model
     % ---------------------------------------------------------------------
-    % Parabolic power-dependent inverter efficiency:
-    %
-    %   eta = etaMax - curvature * (loadFraction - loadOpt)^2
-    %
-    % where:
-    %   loadFraction = P_ac_out / P_inv_nom
-    %
-    % This replaces the previous piecewise interpolation curve when
-    % cfg.inverter.efficiencyModel = "parabolic".
-    cfg.inverter.efficiencyModel = "parabolic";
+    % Inverter / PCS efficiency model - 1000 V DC input class
+    % ---------------------------------------------------------------------
+    cfg.inverter.efficiencyModel = "curve";
 
-    cfg.inverter.etaMax = 0.985;
+    % 1000 V-os DC oldali inverter / PCS tartomany.
+    cfg.inverter.VdcNom_V = 1000;
+    cfg.inverter.VdcMin_V = 550;
+    cfg.inverter.VdcMax_V = 1000;
+
+    % Power-dependent efficiency curve.
+    % loadFraction = P_ac_out / P_inv_nom
+    cfg.inverter.loadFractionCurve = ...
+        [0.00 0.02 0.05 0.10 0.20 0.50 0.75 1.00];
+
+    cfg.inverter.etaCurve = ...
+        [0.00 0.90 0.945 0.965 0.975 0.985 0.984 0.980];
+
     cfg.inverter.etaMin = 0.80;
+    cfg.inverter.etaMax = 0.985;
 
-    % Best efficiency point.
+    % These are only used if efficiencyModel = "parabolic".
     cfg.inverter.loadOpt = 0.55;
-
-    % Curvature of the parabola.
-    % Larger value -> stronger efficiency drop at low and high load.
-    cfg.inverter.curvature = 0.09;
-
-    % Efficiency below this load is forced to zero output mode.
+    cfg.inverter.curvature = 0.08;
     cfg.inverter.minActiveLoadFraction = 1e-6;
-
-    % Fallback curve if cfg.inverter.efficiencyModel = "curve".
-    cfg.inverter.loadFractionCurve = [0.00 0.05 0.10 0.20 0.50 0.75 1.00];
-    cfg.inverter.etaCurve          = [0.00 0.88 0.92 0.95 0.97 0.965 0.955];
 
     % ---------------------------------------------------------------------
     % Diagnostics
@@ -258,15 +291,37 @@ function cfg = create_configurations(basePath)
     cfg.diagnostics.saveFullTimeSeries = true;
     cfg.diagnostics.saveFigFiles = true;
 
+    cfg.diagnostics.plotFullHorizonVoltages = true;
+
+    cfg.diagnostics.plotEveryDay = false;
+    cfg.diagnostics.plotDayIndices = [];
+
+    cfg.diagnostics.minBessChargeEnergy_kWh = 100.0;
+    cfg.diagnostics.maxDiagnosticDaysToPlot = 6;
+
+    cfg.diagnostics.includeLowPvDays = true;
+    cfg.diagnostics.nLowPvDaysToPlot = 4;
+    cfg.diagnostics.lowPvMinEnergy_kWh = 2.0;
+
+    cfg.diagnostics.showFigures = false;
+    cfg.diagnostics.closeFiguresAfterSave = true;
+
     % ---------------------------------------------------------------------
-    % BESS configuration
+    % BESS rack / pack configuration - 1000 V class
     % ---------------------------------------------------------------------
     cfg.bess.cellCapacity_Ah = 280;
     cfg.bess.cellNominalVoltage_V = 3.2;
 
-    % 1000 V-os rendszerhez illesztett LFP BESS rack/string.
-    % Nominalisan kb. 896 V, felso tartomanyban kb. 1020 V.
-    cfg.bess.Ns = 280;
+    % 1000 V-os rendszerhez illesztett LFP rack/string.
+    %
+    % Nominal:
+    %   270 * 3.2 V  = 864 V
+    %
+    % Upper voltage estimate:
+    %   270 * 3.65 V = 985.5 V
+    %
+    % This keeps the BESS pack in a realistic 1000 V class range.
+    cfg.bess.Ns = 270;
     cfg.bess.V_nominal_pack = cfg.bess.Ns * cfg.bess.cellNominalVoltage_V;
 
     cfg.bess.SoC_initial = 0.50;

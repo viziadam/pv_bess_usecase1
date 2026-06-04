@@ -112,8 +112,24 @@ function options = local_default_options(options, cfg)
         options.outputDir = fullfile(cfg.paths.figures, 'diagnostics');
     end
 
-    if options.makePlots && ~exist(options.outputDir, 'dir')
-        mkdir(options.outputDir);
+    if ~isfield(options, 'useUniqueOutputSubfolder')
+        options.useUniqueOutputSubfolder = true;
+    end
+
+    if ~isfield(options, 'runTag') || strlength(string(options.runTag)) == 0
+        options.runTag = string(local_make_safe_file_tag());
+    else
+        options.runTag = string(options.runTag);
+    end
+
+    if options.makePlots
+        if options.useUniqueOutputSubfolder
+            options.outputDir = local_create_unique_output_dir( ...
+                options.outputDir, ...
+                "run_" + options.runTag);
+        elseif ~exist(options.outputDir, 'dir')
+            mkdir(options.outputDir);
+        end
     end
 end
 
@@ -234,11 +250,26 @@ function history = local_collect_detailed_history(data, cfg, design)
 
     for d = 1:nDays
         dayInput = local_get_day_input(data, d);
-        dayResultCells{d} = simulate_day_vectorized(dayInput, state, design, cfg);
-        running = update_metrics(running, dayResultCells{d}.dayVectors, dayInput.dt_h, cfg);
+
+        dayResultCells{d} = simulate_day_vectorized( ...
+            dayInput, ...
+            state, ...
+            design, ...
+            cfg);
+
+        running = update_metrics( ...
+            running, ...
+            dayResultCells{d}.dayVectors, ...
+            dayInput.dt_h, ...
+            cfg);
+
         state = dayResultCells{d}.stateEnd;
         stateEndCells{d} = state;
     end
+
+    [fullHorizon, fullTime_h, fullDayIndex] = local_concat_day_vectors( ...
+        dayResultCells, ...
+        data.days(1).dt_h);
 
     history = struct();
     history.design = design;
@@ -246,9 +277,14 @@ function history = local_collect_detailed_history(data, cfg, design)
     history.dayResults = [dayResultCells{:}];
     history.stateEnd = [stateEndCells{:}];
     history.finalState = state;
+
     history.firstDay = dayResultCells{1}.dayVectors;
     history.dt_h = data.days(1).dt_h;
     history.time_h = (0:nT-1).' * history.dt_h;
+
+    history.fullHorizon = fullHorizon;
+    history.fullTime_h = fullTime_h;
+    history.fullDayIndex = fullDayIndex;
 end
 
 
@@ -376,74 +412,189 @@ end
 
 function plotFiles = local_plot_case(history, coupling, options)
 
-    plotFiles = strings(2, 1);
-    v = history.firstDay;
-    time_h = history.time_h;
+    plotFiles = strings(0, 1);
+
+    if isfield(history, 'fullHorizon') && isfield(history, 'fullTime_h') && ...
+            ~isempty(history.fullTime_h)
+
+        v = history.fullHorizon;
+        time_h = history.fullTime_h(:);
+        timeLabel = 'Ido a szimulacio elejetol [h]';
+        horizonLabel = 'teljes horizont';
+
+    else
+
+        v = history.firstDay;
+        time_h = history.time_h(:);
+        timeLabel = 'Ido [h]';
+        horizonLabel = 'elso nap';
+    end
 
     couplingChar = char(coupling);
     couplingUpper = upper(couplingChar);
 
-    fig = figure('Visible', char(options.figureVisible), ...
-        'Name', sprintf('PV+BESS %s energy flows diagnostic', couplingUpper));
-    tiledlayout(fig, 2, 1);
+    filePrefix = sprintf( ...
+        'diagnostic_%s_%s', ...
+        couplingChar, ...
+        char(options.runTag));
+
+    % ---------------------------------------------------------------------
+    % 1) Energiaaramlasi diagnosztika
+    % ---------------------------------------------------------------------
+    fig = figure( ...
+        'Visible', char(options.figureVisible), ...
+        'Name', sprintf('PV+BESS %s energy flows diagnostic', couplingUpper), ...
+        'Color', 'w', ...
+        'Position', [80, 80, 1500, 900]);
+
+    tiledlayout(fig, 2, 1, ...
+        'TileSpacing', 'compact', ...
+        'Padding', 'compact');
 
     nexttile;
-    plot(time_h, v.P_load_kW, 'k-', 'LineWidth', 1.3); hold on;
-    plot(time_h, v.P_pv_available_kW, 'Color', [0.95 0.55 0.10], 'LineWidth', 1.1);
-    plot(time_h, v.P_pv_to_load_kW, 'g-', 'LineWidth', 1.0);
-    plot(time_h, v.P_grid_import_kW, 'b-', 'LineWidth', 1.0);
+    hold on;
     grid on;
-    xlabel('Ido [h]');
+
+    local_plot_vector_if_available(time_h, v, 'P_load_kW', 'Load', 1.3);
+    local_plot_vector_if_available(time_h, v, 'P_pv_available_kW', 'PV available', 1.1);
+    local_plot_vector_if_available(time_h, v, 'P_pv_to_load_kW', 'PV to load', 1.0);
+    local_plot_vector_if_available(time_h, v, 'P_grid_import_kW', 'Grid import', 1.0);
+
+    xlabel(timeLabel);
     ylabel('Teljesitmeny [kW]');
-    title(sprintf('%s-csatolt: fogyasztas, PV es grid import', couplingUpper));
-    legend({'Load', 'PV available', 'PV to load', 'Grid import'}, 'Location', 'best');
+    title(sprintf('%s-csatolt: fogyasztas, PV es grid import - %s', ...
+        couplingUpper, horizonLabel));
+    legend('Location', 'best');
 
     nexttile;
-    plot(time_h, v.P_pv_to_bess_kW, 'Color', [0.10 0.55 0.95], 'LineWidth', 1.1); hold on;
-    plot(time_h, v.P_bess_to_load_kW, 'Color', [0.80 0.10 0.10], 'LineWidth', 1.1);
-    plot(time_h, v.P_curtailment_kW, 'Color', [0.45 0.45 0.45], 'LineWidth', 1.0);
+    hold on;
     grid on;
-    xlabel('Ido [h]');
+
+    local_plot_vector_if_available(time_h, v, 'P_pv_to_bess_kW', 'PV to BESS', 1.1);
+    local_plot_vector_if_available(time_h, v, 'P_bess_to_load_kW', 'BESS to load', 1.1);
+    local_plot_vector_if_available(time_h, v, 'P_curtailment_kW', 'Curtailment', 1.0);
+
+    xlabel(timeLabel);
     ylabel('Teljesitmeny [kW]');
     title('BESS aramlasok es curtailment');
-    legend({'PV to BESS', 'BESS to load', 'Curtailment'}, 'Location', 'best');
+    legend('Location', 'best');
 
-    plotFiles(1) = fullfile(options.outputDir, sprintf('diagnostic_%s_energy_flows.png', couplingChar));
-    saveas(fig, char(plotFiles(1)));
+    plotFiles(end+1, 1) = fullfile( ...
+        options.outputDir, ...
+        sprintf('%s_energy_flows_full_horizon.png', filePrefix));
+
+    saveas(fig, char(plotFiles(end)));
     close(fig);
 
-    fig = figure('Visible', char(options.figureVisible), ...
-        'Name', sprintf('PV+BESS %s battery diagnostic', couplingUpper));
-    tiledlayout(fig, 2, 1);
+    % ---------------------------------------------------------------------
+    % 2) Akkumulator allapotdiagnosztika
+    % ---------------------------------------------------------------------
+    fig = figure( ...
+        'Visible', char(options.figureVisible), ...
+        'Name', sprintf('PV+BESS %s battery diagnostic', couplingUpper), ...
+        'Color', 'w', ...
+        'Position', [100, 100, 1500, 900]);
+
+    tiledlayout(fig, 2, 1, ...
+        'TileSpacing', 'compact', ...
+        'Padding', 'compact');
 
     nexttile;
-    plot(time_h, v.SoC * 100, 'b-', 'LineWidth', 1.2); hold on;
+    hold on;
+    grid on;
+
+    if isfield(v, 'SoC')
+        plot(time_h, v.SoC(:) * 100, ...
+            'LineWidth', 1.2, ...
+            'DisplayName', 'SoC');
+    end
+
     if isfield(v, 'SOH')
-        plot(time_h, v.SOH * 100, 'r-', 'LineWidth', 1.0);
-        legend({'SoC', 'SoH'}, 'Location', 'best');
-    else
-        legend({'SoC'}, 'Location', 'best');
+        plot(time_h, v.SOH(:) * 100, ...
+            'LineWidth', 1.0, ...
+            'DisplayName', 'SoH');
     end
-    grid on;
-    xlabel('Ido [h]');
+
+    xlabel(timeLabel);
     ylabel('Allapot [%]');
-    title(sprintf('%s-csatolt: BESS SoC/SoH', couplingUpper));
+    title(sprintf('%s-csatolt: BESS SoC/SoH - %s', couplingUpper, horizonLabel));
+    legend('Location', 'best');
 
     nexttile;
-    if isfield(v, 'P_pack_req_kW')
-        plot(time_h, v.P_pack_req_kW, 'Color', [0.3 0.3 0.3], 'LineWidth', 1.0); hold on;
-    end
-    if isfield(v, 'P_pack_actual_kW')
-        plot(time_h, v.P_pack_actual_kW, 'm-', 'LineWidth', 1.0);
-    end
+    hold on;
     grid on;
-    xlabel('Ido [h]');
+
+    local_plot_vector_if_available(time_h, v, 'P_pack_req_kW', 'P pack requested', 1.0);
+    local_plot_vector_if_available(time_h, v, 'P_pack_actual_kW', 'P pack actual', 1.0);
+
+    xlabel(timeLabel);
     ylabel('Pack teljesitmeny [kW]');
     title('Pack request/actual (+ kisutes, - toltes)');
-    legend({'P pack requested', 'P pack actual'}, 'Location', 'best');
+    legend('Location', 'best');
 
-    plotFiles(2) = fullfile(options.outputDir, sprintf('diagnostic_%s_battery_state.png', couplingChar));
-    saveas(fig, char(plotFiles(2)));
+    plotFiles(end+1, 1) = fullfile( ...
+        options.outputDir, ...
+        sprintf('%s_battery_state_full_horizon.png', filePrefix));
+
+    saveas(fig, char(plotFiles(end)));
+    close(fig);
+
+    % ---------------------------------------------------------------------
+    % 3) Teljes horizontu feszultsegdiagnosztika
+    % ---------------------------------------------------------------------
+    fig = figure( ...
+        'Visible', char(options.figureVisible), ...
+        'Name', sprintf('PV+BESS %s full horizon voltage diagnostic', couplingUpper), ...
+        'Color', 'w', ...
+        'Position', [120, 120, 1500, 950]);
+
+    tiledlayout(fig, 3, 1, ...
+        'TileSpacing', 'compact', ...
+        'Padding', 'compact');
+
+    nexttile;
+    hold on;
+    grid on;
+
+    local_plot_vector_if_available(time_h, v, 'V_pv_mpp_mean_V', 'PV MPP mean voltage', 1.2);
+
+    ylabel('Feszultseg [V]');
+    title(sprintf('%s-csatolt: PV oldali MPP feszultseg - %s', ...
+        couplingUpper, horizonLabel));
+    legend('Location', 'best');
+
+    nexttile;
+    hold on;
+    grid on;
+
+    local_plot_vector_if_available(time_h, v, 'V_dc_link_V', 'DC bus voltage', 1.2);
+
+    ylabel('Feszultseg [V]');
+    title(sprintf('%s-csatolt: kozos DC busz feszultseg - %s', ...
+        couplingUpper, horizonLabel));
+    legend('Location', 'best');
+
+    nexttile;
+    hold on;
+    grid on;
+
+    local_plot_vector_if_available(time_h, v, 'V_pack_pre_V', 'BESS pack voltage before step', 1.0);
+    local_plot_vector_if_available(time_h, v, 'V_pack_actual_V', 'BESS pack actual voltage', 1.2);
+
+    xlabel(timeLabel);
+    ylabel('Feszultseg [V]');
+    title(sprintf('%s-csatolt: BESS DC oldali feszultseg - %s', ...
+        couplingUpper, horizonLabel));
+    legend('Location', 'best');
+
+    sgtitle(sprintf('%s-csatolt PV/DC-busz/BESS feszultsegdiagnosztika', couplingUpper), ...
+        'FontWeight', 'bold');
+
+    plotFiles(end+1, 1) = fullfile( ...
+        options.outputDir, ...
+        sprintf('%s_voltage_summary_full_horizon.png', filePrefix));
+
+    saveas(fig, char(plotFiles(end)));
     close(fig);
 end
 
@@ -471,4 +622,178 @@ function summaryTable = local_build_summary_table(cases)
     end
 
     summaryTable = table(caseName, checkName, passed, value, tolerance, details);
+end
+
+function [fullVectors, fullTime_h, fullDayIndex] = local_concat_day_vectors(dayResultCells, dt_h)
+
+    fullVectors = struct();
+    fullTime_h = [];
+    fullDayIndex = [];
+
+    nDays = numel(dayResultCells);
+
+    if nDays == 0
+        return;
+    end
+
+    fieldNames = strings(0, 1);
+
+    for d = 1:nDays
+
+        if isempty(dayResultCells{d}) || ~isfield(dayResultCells{d}, 'dayVectors')
+            continue;
+        end
+
+        V = dayResultCells{d}.dayVectors;
+        theseFields = string(fieldnames(V));
+
+        for k = 1:numel(theseFields)
+            name = theseFields(k);
+            value = V.(char(name));
+
+            if isnumeric(value) || islogical(value)
+                if isvector(value)
+                    fieldNames(end+1, 1) = name; %#ok<AGROW>
+                end
+            end
+        end
+    end
+
+    fieldNames = unique(fieldNames, 'stable');
+
+    for k = 1:numel(fieldNames)
+        fullVectors.(char(fieldNames(k))) = [];
+    end
+
+    for d = 1:nDays
+
+        if isempty(dayResultCells{d}) || ~isfield(dayResultCells{d}, 'dayVectors')
+            continue;
+        end
+
+        V = dayResultCells{d}.dayVectors;
+
+        if isfield(V, 'P_load_kW')
+            nT = numel(V.P_load_kW);
+        else
+            firstField = char(fieldNames(1));
+            nT = numel(V.(firstField));
+        end
+
+        tDay_h = (0:nT-1).' * dt_h;
+        tAbs_h = (d - 1) * 24 + tDay_h;
+
+        fullTime_h = [fullTime_h; tAbs_h]; %#ok<AGROW>
+        fullDayIndex = [fullDayIndex; d * ones(nT, 1)]; %#ok<AGROW>
+
+        for k = 1:numel(fieldNames)
+
+            name = char(fieldNames(k));
+
+            if isfield(V, name)
+                x = local_fit_column_vector(V.(name), nT, NaN);
+            else
+                x = NaN(nT, 1);
+            end
+
+            fullVectors.(name) = [fullVectors.(name); x]; %#ok<AGROW>
+        end
+    end
+end
+
+function x = local_fit_column_vector(x, nT, fillValue)
+
+    if nargin < 3
+        fillValue = NaN;
+    end
+
+    if isempty(x)
+        x = fillValue * ones(nT, 1);
+        return;
+    end
+
+    x = double(x(:));
+
+    if numel(x) < nT
+        x(end+1:nT, 1) = fillValue;
+    end
+
+    if numel(x) > nT
+        x = x(1:nT);
+    end
+end
+
+function didPlot = local_plot_vector_if_available(t, S, fieldName, displayName, lineWidth)
+
+    didPlot = false;
+
+    if nargin < 5 || isempty(lineWidth)
+        lineWidth = 1.2;
+    end
+
+    if ~isfield(S, fieldName)
+        return;
+    end
+
+    x = S.(fieldName);
+
+    if isempty(x)
+        return;
+    end
+
+    x = double(x(:));
+    t = double(t(:));
+
+    n = min(numel(t), numel(x));
+
+    if n == 0
+        return;
+    end
+
+    t = t(1:n);
+    x = x(1:n);
+
+    valid = isfinite(t) & isfinite(x);
+
+    if ~any(valid)
+        return;
+    end
+
+    plot(t(valid), x(valid), ...
+        'LineWidth', lineWidth, ...
+        'DisplayName', displayName);
+
+    didPlot = true;
+end
+function outputDir = local_create_unique_output_dir(baseDir, folderName)
+
+    if nargin < 2 || strlength(string(folderName)) == 0
+        folderName = "run_" + string(local_make_safe_file_tag());
+    end
+
+    if ~exist(baseDir, 'dir')
+        mkdir(baseDir);
+    end
+
+    outputDir = fullfile(baseDir, char(folderName));
+
+    counter = 0;
+
+    while exist(outputDir, 'dir')
+        counter = counter + 1;
+        outputDir = fullfile( ...
+            baseDir, ...
+            sprintf('%s_%03d', char(folderName), counter));
+    end
+
+    mkdir(outputDir);
+end
+
+function tag = local_make_safe_file_tag()
+
+    tag = datestr(now, 'yyyymmdd_HHMMSS_FFF');
+
+    tag = strrep(tag, ':', '');
+    tag = strrep(tag, '-', '');
+    tag = strrep(tag, ' ', '_');
 end
