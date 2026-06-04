@@ -79,10 +79,12 @@ function [step, stateEnd] = dccoupled_energy_strategy_vector(P_pv_dc_kW, P_load_
 
     else
 
-        V_dc_link_V = local_get_dc_link_voltage_without_pv_dcdc( ...
+        [V_dc_link_V, V_dc_link_unclamped_V, dcBusVoltageClamped] = ...
+            local_get_dc_link_voltage_without_pv_dcdc( ...
             cfg, ...
             design, ...
             V_pv_mpp_mean_V, ...
+            P_pv_dc_kW, ...
             N);
     end
 
@@ -111,6 +113,29 @@ function [step, stateEnd] = dccoupled_energy_strategy_vector(P_pv_dc_kW, P_load_
         pvDcdc.P_dc_link_total_kW = P_pv_dc_link_kW;
         pvDcdc.P_loss_total_kW = P_pv_dcdc_conversion_loss_kW;
         pvDcdc.P_clipped_total_kW = P_pv_dcdc_power_clipped_kW;
+
+        if usePvMpptDcdc
+
+            V_dc_link_V = local_get_dc_link_voltage( ...
+                cfg, ...
+                design, ...
+                N, ...
+                pvGroups, ...
+                V_pack_pre_V);
+
+            V_dc_link_unclamped_V = V_dc_link_V;
+            dcBusVoltageClamped = false(N, 1);
+
+        else
+
+            [V_dc_link_V, V_dc_link_unclamped_V, dcBusVoltageClamped] = ...
+                local_get_dc_link_voltage_without_pv_dcdc( ...
+                    cfg, ...
+                    design, ...
+                    V_pv_mpp_mean_V, ...
+                    P_pv_dc_kW, ...
+                    N);
+        end
 
     elseif isempty(pvGroups)
 
@@ -383,6 +408,9 @@ function [step, stateEnd] = dccoupled_energy_strategy_vector(P_pv_dc_kW, P_load_
 
     % DC bus
     step.V_dc_link_V = V_dc_link_V(:);
+    step.V_dc_link_unclamped_V = V_dc_link_unclamped_V(:);
+    step.dcBusVoltageClamped = double(dcBusVoltageClamped(:));
+
     step.V_pv_mpp_mean_V = V_pv_mpp_mean_V(:);
     step.V_pack_pre_V = V_pack_pre_V(:);
     step.V_pack_actual_V = V_pack_actual_V(:);
@@ -992,38 +1020,46 @@ end
 
 function V_pv_mpp_mean_V = local_estimate_pv_mpp_voltage_timeseries(pvGroups, N)
 
+    if isempty(pvGroups)
+        error(['PV MPP voltage cannot be calculated because pvGroups is empty. ', ...
+               'The DC-coupled simulation requires orientation/string-level PV data.']);
+    end
+
     V_num = zeros(N, 1);
     V_den = zeros(N, 1);
-
-    if isempty(pvGroups)
-        V_pv_mpp_mean_V = NaN(N, 1);
-        return;
-    end
 
     for g = 1:numel(pvGroups)
 
         group = pvGroups(g);
 
+        % -----------------------------------------------------------------
+        % Voltage source
+        % -----------------------------------------------------------------
         if isfield(group, 'V_string_mpp_V') && ~isempty(group.V_string_mpp_V)
 
             Vg = local_fit_vector(group.V_string_mpp_V, N, NaN);
 
         elseif isfield(group, 'V_mpp_module_V') && ~isempty(group.V_mpp_module_V)
 
-            if isfield(group, 'Ns') && ~isempty(group.Ns) && ...
-                    isnumeric(group.Ns) && isscalar(group.Ns) && isfinite(group.Ns)
-                Ns = group.Ns;
-            else
-                Ns = 24;
+            if ~isfield(group, 'Ns') || isempty(group.Ns) || ...
+                    ~isnumeric(group.Ns) || ~isscalar(group.Ns) || ...
+                    ~isfinite(group.Ns) || group.Ns <= 0
+
+                error(['PV group %d has V_mpp_module_V but missing or invalid Ns. ', ...
+                       'Cannot calculate V_string_mpp_V = Ns * V_mpp_module_V.'], g);
             end
 
-            Vg = Ns * local_fit_vector(group.V_mpp_module_V, N, NaN);
+            Vg = group.Ns * local_fit_vector(group.V_mpp_module_V, N, NaN);
 
         else
 
-            continue;
+            error(['PV group %d is missing both V_string_mpp_V and V_mpp_module_V. ', ...
+                   'Cannot calculate PV MPP voltage.'], g);
         end
 
+        % -----------------------------------------------------------------
+        % Weight source
+        % -----------------------------------------------------------------
         if isfield(group, 'P_mppt_in_kW') && ~isempty(group.P_mppt_in_kW)
             Pg = local_fit_vector(group.P_mppt_in_kW, N, 0);
 
@@ -1034,11 +1070,16 @@ function V_pv_mpp_mean_V = local_estimate_pv_mpp_voltage_timeseries(pvGroups, N)
             Pg = local_fit_vector(group.P_orientation_ref_kW, N, 0);
 
         else
-            Pg = ones(N, 1);
+            error(['PV group %d is missing power data. ', ...
+                   'Expected P_mppt_in_kW, P_orientation_available_kW or P_orientation_ref_kW.'], g);
         end
 
         Vg = double(Vg(:));
         Pg = double(Pg(:));
+
+        if numel(Vg) ~= N || numel(Pg) ~= N
+            error('PV group %d voltage/power vector length mismatch.', g);
+        end
 
         valid = isfinite(Vg) & Vg > 0 & isfinite(Pg) & Pg > 0;
 
@@ -1052,28 +1093,167 @@ function V_pv_mpp_mean_V = local_estimate_pv_mpp_voltage_timeseries(pvGroups, N)
     V_pv_mpp_mean_V(validOut) = V_num(validOut) ./ V_den(validOut);
 end
 
-function V_dc_link_V = local_get_dc_link_voltage_without_pv_dcdc(cfg, design, V_pv_mpp_mean_V, N)
+function [V_dc_link_V, V_dc_link_unclamped_V, dcBusVoltageClamped] = ...
+    local_get_dc_link_voltage_without_pv_dcdc(cfg, design, V_pv_mpp_mean_V, P_pv_dc_kW, N)
 
     V_pv_mpp_mean_V = local_fit_vector(V_pv_mpp_mean_V, N, NaN);
-    V_dc_link_V = double(V_pv_mpp_mean_V(:));
+    P_pv_dc_kW = local_fit_vector(P_pv_dc_kW, N, 0);
 
-    % Fallback feszultseg ejszakara / hianyzo PV feszultsegre.
-    V_fallback = [];
+    V_dc_link_unclamped_V = double(V_pv_mpp_mean_V(:));
+    P_pv_dc_kW = double(P_pv_dc_kW(:));
 
-    if isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'noMpptFallback_V')
-        V_fallback = cfg.dcBus.noMpptFallback_V;
+    % ---------------------------------------------------------------------
+    % PV-direct case:
+    % If PV is producing, the PV-side MPP voltage is the natural DC bus
+    % voltage reference. If this exceeds the allowed window, the inverter
+    % control clamps the operating voltage to the nearest allowed boundary.
+    % ---------------------------------------------------------------------
+    pvActiveThreshold_kW = 1e-6;
+
+    if isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'pvActiveThreshold_kW')
+        pvActiveThreshold_kW = cfg.dcBus.pvActiveThreshold_kW;
     end
 
-    if isempty(V_fallback) || ...
-            ~isnumeric(V_fallback) || ...
-            ~isscalar(V_fallback) || ...
-            ~isfinite(V_fallback) || ...
-            V_fallback <= 0
+    pvActive = isfinite(P_pv_dc_kW) & P_pv_dc_kW > pvActiveThreshold_kW;
 
-        V_fallback = local_get_fixed_dc_link_voltage(cfg, design);
+    invalidVoltage = ...
+        ~isfinite(V_dc_link_unclamped_V) | ...
+        V_dc_link_unclamped_V <= 0;
+
+    invalidDuringPvProduction = pvActive & invalidVoltage;
+
+    if any(invalidDuringPvProduction)
+        firstBadIndex = find(invalidDuringPvProduction, 1, 'first');
+
+        error(['PV-direct DC bus voltage cannot be calculated. ', ...
+               'PV production is positive at sample %d, but V_pv_mpp_mean_V is missing or invalid. ', ...
+               'Check pvGroups, V_mpp_module_V, V_string_mpp_V and cfg.pv.Ns.'], ...
+               firstBadIndex);
     end
 
-    invalid = ~isfinite(V_dc_link_V) | V_dc_link_V <= 0;
+    % ---------------------------------------------------------------------
+    % Backup voltage is only allowed when PV is not producing.
+    % This represents the DC-side operating voltage for the inverter/BESS
+    % side during zero-PV periods.
+    % ---------------------------------------------------------------------
+    V_backup = local_get_no_mppt_backup_voltage(cfg, design);
 
-    V_dc_link_V(invalid) = V_fallback;
+    noPvInvalid = ~pvActive & invalidVoltage;
+    V_dc_link_unclamped_V(noPvInvalid) = V_backup;
+
+    % ---------------------------------------------------------------------
+    % Allowed common DC-link voltage window
+    % ---------------------------------------------------------------------
+    [V_min, V_max] = local_get_dc_link_allowed_window(cfg);
+
+    V_dc_link_V = V_dc_link_unclamped_V;
+
+    belowMin = isfinite(V_dc_link_V) & V_dc_link_V < V_min;
+    aboveMax = isfinite(V_dc_link_V) & V_dc_link_V > V_max;
+
+    V_dc_link_V(belowMin) = V_min;
+    V_dc_link_V(aboveMax) = V_max;
+
+    dcBusVoltageClamped = belowMin | aboveMax;
+
+    % ---------------------------------------------------------------------
+    % Remaining invalid values are not allowed.
+    % ---------------------------------------------------------------------
+    stillInvalid = ~isfinite(V_dc_link_V) | V_dc_link_V <= 0;
+
+    if any(stillInvalid)
+        firstBadIndex = find(stillInvalid, 1, 'first');
+
+        error(['Invalid DC-link voltage after PV-direct voltage limiting. ', ...
+               'Sample %d has invalid Vdc.'], firstBadIndex);
+    end
+end
+
+function V_backup = local_get_no_mppt_backup_voltage(cfg, design)
+
+    V_backup = [];
+
+    if isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'noMpptBackup_V')
+        V_backup = cfg.dcBus.noMpptBackup_V;
+    elseif isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'noMpptFallback_V')
+        V_backup = cfg.dcBus.noMpptFallback_V;
+    elseif isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'V_ref_V')
+        V_backup = cfg.dcBus.V_ref_V;
+    elseif isfield(cfg, 'dc') && isfield(cfg.dc, 'V_dc_link_ref_V')
+        V_backup = cfg.dc.V_dc_link_ref_V;
+    elseif isfield(design, 'V_dc_link_V')
+        V_backup = design.V_dc_link_V;
+    elseif isfield(design, 'V_dc_link_ref_V')
+        V_backup = design.V_dc_link_ref_V;
+    else
+        error(['No backup DC-link voltage is defined for PV-direct mode. ', ...
+               'Set cfg.dcBus.noMpptBackup_V for zero-PV periods.']);
+    end
+
+    if isempty(V_backup) || ~isnumeric(V_backup) || ~isscalar(V_backup) || ...
+            ~isfinite(V_backup) || V_backup <= 0
+
+        error('Invalid backup DC-link voltage for PV-direct mode.');
+    end
+end
+
+function [V_min, V_max] = local_get_dc_link_allowed_window(cfg)
+
+    V_min = -inf;
+    V_max = inf;
+
+    % Inverter DC input window
+    if isfield(cfg, 'inverter') && isfield(cfg.inverter, 'VdcMin_V')
+        V_min = max(V_min, cfg.inverter.VdcMin_V);
+    end
+
+    if isfield(cfg, 'inverter') && isfield(cfg.inverter, 'VdcMax_V')
+        V_max = min(V_max, cfg.inverter.VdcMax_V);
+    end
+
+    % BESS DC/DC high-side window, because this is the common DC bus side.
+    if isfield(cfg, 'bessDcdc') && isfield(cfg.bessDcdc, 'VhighMin_V')
+        V_min = max(V_min, cfg.bessDcdc.VhighMin_V);
+    end
+
+    if isfield(cfg, 'bessDcdc') && isfield(cfg.bessDcdc, 'VhighMax_V')
+        V_max = min(V_max, cfg.bessDcdc.VhighMax_V);
+    end
+
+    if ~isfinite(V_min) || ~isfinite(V_max) || V_min <= 0 || V_max <= 0 || V_min >= V_max
+        error(['Invalid DC-link allowed voltage window. ', ...
+               'Check cfg.inverter.VdcMin_V, cfg.inverter.VdcMax_V, ', ...
+               'cfg.bessDcdc.VhighMin_V and cfg.bessDcdc.VhighMax_V.']);
+    end
+end
+
+function V_backup = local_get_no_mppt_backup_voltage(cfg, design)
+
+    V_backup = [];
+
+    if isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'noMpptBackup_V')
+        V_backup = cfg.dcBus.noMpptBackup_V;
+
+    elseif isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'noMpptFallback_V')
+        V_backup = cfg.dcBus.noMpptFallback_V;
+
+    elseif isfield(cfg, 'dcBus') && isfield(cfg.dcBus, 'V_ref_V')
+        V_backup = cfg.dcBus.V_ref_V;
+
+    elseif isfield(cfg, 'dc') && isfield(cfg.dc, 'V_dc_link_ref_V')
+        V_backup = cfg.dc.V_dc_link_ref_V;
+
+    elseif isfield(design, 'V_dc_link_V')
+        V_backup = design.V_dc_link_V;
+
+    elseif isfield(design, 'V_dc_link_ref_V')
+        V_backup = design.V_dc_link_ref_V;
+    end
+
+    if isempty(V_backup) || ~isnumeric(V_backup) || ~isscalar(V_backup) || ...
+            ~isfinite(V_backup) || V_backup <= 0
+
+        error(['No valid backup DC-link voltage is defined for PV-direct mode. ', ...
+               'Set cfg.dcBus.noMpptBackup_V for zero-PV periods.']);
+    end
 end

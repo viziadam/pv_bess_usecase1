@@ -132,6 +132,18 @@ function cfg = create_configurations(basePath)
     % PV module and string configuration - 1000 V class system
     % ---------------------------------------------------------------------
     cfg.pv.modulePower_kWp = 0.715;
+    cfg.pv.validateStringVoc = true;
+
+    % Modul adatlapbol:
+    cfg.pv.moduleVoc_STC_V = 49.5;              % peldaertek, datasheet alapjan cserelni
+    cfg.pv.moduleVocTempCoeff_per_C = -0.0025; % relativ 1/C, pl. -0.25 %/C = -0.0025 1/C
+
+    % Helyszin / tervezesi minimum cellahomerseklet:
+    cfg.pv.minCellTemp_C = -10;
+    
+    % PV-direct esetben ez legyen az inverter/DC busz max.
+    % MPPT DC/DC-s esetben ez inkabb cfg.mpptDcdc.VinMax_V.
+    cfg.pv.maxStringVoltage_V = 1000;
 
     % 1000 V-os rendszerhez nem celszeru a string MPP feszultseget
     % tul kozel vinni az 1000 V-os maximumhoz.
@@ -139,7 +151,7 @@ function cfg = create_configurations(basePath)
     % Tipikus nagy teljesitmenyu modulnal:
     %   V_mpp_module ~= 41...42 V
     %   20 modul sorban ~= 820...840 V string MPP
-    cfg.pv.Ns = 24;
+    cfg.pv.Ns = 18;
 
     cfg.pv.enforceIntegerStrings = true;
     cfg.pv.stringRoundingMode = "round";
@@ -252,7 +264,7 @@ function cfg = create_configurations(basePath)
 
     % 1000 V-os DC oldali inverter / PCS tartomany.
     cfg.inverter.VdcNom_V = 1000;
-    cfg.inverter.VdcMin_V = 550;
+    cfg.inverter.VdcMin_V = 470;
     cfg.inverter.VdcMax_V = 1000;
 
     % Power-dependent efficiency curve.

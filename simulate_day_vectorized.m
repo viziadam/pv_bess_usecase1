@@ -250,13 +250,16 @@ function pvGroups = local_build_pv_mppt_groups(dayInput, design, cfg, N)
     pvGroups = [];
 
     if ~isfield(dayInput, 'pvGroups') || isempty(dayInput.pvGroups)
-        return;
+        error(['simulate_day_vectorized: dayInput.pvGroups is missing. ', ...
+           'The simulation requires pvGroups for PV voltage and MPPT/DC-link modelling.']);
     end
 
     rawGroups = dayInput.pvGroups;
 
     Ns = local_get_pv_series_modules(design, cfg);
     modulePower_kWp = local_get_module_power_kWp(cfg, rawGroups);
+
+    local_validate_pv_string_sizing_from_cfg(cfg, Ns);
 
     scaleFactor = local_get_reference_scale_factor(dayInput, design, cfg);
 
@@ -433,19 +436,31 @@ function Ns = local_get_pv_series_modules(design, cfg)
 
     if isfield(cfg, 'pv') && isfield(cfg.pv, 'Ns')
         Ns = cfg.pv.Ns;
+
     elseif isfield(cfg, 'pv') && isfield(cfg.pv, 'N_series')
         Ns = cfg.pv.N_series;
+
     elseif isfield(design, 'Ns')
         Ns = design.Ns;
+
     elseif isfield(design, 'N_series')
         Ns = design.N_series;
     end
 
-    if isempty(Ns) || ~isnumeric(Ns) || ~isscalar(Ns) || ~isfinite(Ns) || Ns <= 0
-        Ns = 24;
+    if isempty(Ns) || ~isnumeric(Ns) || ~isscalar(Ns) || ...
+            ~isfinite(Ns) || Ns <= 0
+
+        error(['Missing or invalid PV series module count. ', ...
+               'Set cfg.pv.Ns explicitly.']);
     end
 
-    Ns = round(Ns);
+    NsRounded = round(Ns);
+
+    if abs(NsRounded - Ns) > 1e-9
+        error('cfg.pv.Ns must be an integer number of modules in series.');
+    end
+
+    Ns = NsRounded;
 end
 
 
@@ -468,7 +483,8 @@ function modulePower_kWp = local_get_module_power_kWp(cfg, rawGroups)
             ~isscalar(modulePower_kWp) || ~isfinite(modulePower_kWp) || ...
             modulePower_kWp <= 0
 
-        modulePower_kWp = 0.5;
+        error(['Missing or invalid PV module power. ', ...
+               'Set cfg.pv.modulePower_kWp explicitly.']);
     end
 end
 
@@ -572,5 +588,53 @@ function y = local_fit_vector(x, N, fillValue)
         end
 
         y(end+1:N, 1) = lastValue;
+    end
+end
+
+function local_validate_pv_string_sizing_from_cfg(cfg, Ns)
+
+    if ~isfield(cfg, 'pv') || ...
+            ~isfield(cfg.pv, 'validateStringVoc') || ...
+            ~cfg.pv.validateStringVoc
+
+        return;
+    end
+
+    requiredFields = { ...
+        'moduleVoc_STC_V', ...
+        'moduleVocTempCoeff_per_C', ...
+        'minCellTemp_C', ...
+        'maxStringVoltage_V'};
+
+    for k = 1:numel(requiredFields)
+        fieldName = requiredFields{k};
+
+        if ~isfield(cfg.pv, fieldName) || isempty(cfg.pv.(fieldName)) || ...
+                ~isnumeric(cfg.pv.(fieldName)) || ~isscalar(cfg.pv.(fieldName)) || ...
+                ~isfinite(cfg.pv.(fieldName))
+
+            error('Missing or invalid cfg.pv.%s for Voc-based string validation.', fieldName);
+        end
+    end
+
+    Voc_STC = cfg.pv.moduleVoc_STC_V;
+    betaVoc = cfg.pv.moduleVocTempCoeff_per_C;
+    Tmin = cfg.pv.minCellTemp_C;
+    Vmax = cfg.pv.maxStringVoltage_V;
+
+    Voc_cold_module = Voc_STC * (1 + betaVoc * (Tmin - 25));
+    Voc_cold_string = Ns * Voc_cold_module;
+
+    if Voc_cold_module <= 0
+        error('Calculated cold module Voc is invalid. Check cfg.pv.moduleVoc_STC_V and beta coefficient.');
+    end
+
+    NsMax = floor(Vmax / Voc_cold_module);
+
+    if Voc_cold_string > Vmax
+        error(['PV string voltage design is invalid. ', ...
+               'Ns = %d gives cold string Voc = %.3f V, while max allowed string voltage is %.3f V. ', ...
+               'Maximum allowed Ns from cold Voc is %d.'], ...
+               Ns, Voc_cold_string, Vmax, NsMax);
     end
 end

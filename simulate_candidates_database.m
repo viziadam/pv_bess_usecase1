@@ -427,22 +427,61 @@ function dayInput = local_get_day_input(data, dayIdx)
     if isfield(dd, 'date')
         dayInput.date = dd.date;
     else
-        dayInput.date = NaT;
+        error('Missing data.days(%d).date.', dayIdx);
     end
 
     dayInput.dayIndex = dayIdx;
+
+    if ~isfield(dd, 'P_load_kW') || isempty(dd.P_load_kW)
+        error('Missing data.days(%d).P_load_kW.', dayIdx);
+    end
+
+    if ~isfield(dd, 'P_pv_base_kW') || isempty(dd.P_pv_base_kW)
+        error('Missing data.days(%d).P_pv_base_kW.', dayIdx);
+    end
+
     dayInput.P_load_kW = dd.P_load_kW(:);
     dayInput.P_pv_base_kW = dd.P_pv_base_kW(:);
 
-    if isfield(dd, 'T_amb_C')
-        dayInput.T_amb_C = dd.T_amb_C(:);
+    if numel(dayInput.P_load_kW) ~= numel(dayInput.P_pv_base_kW)
+        error(['Length mismatch in data.days(%d): ', ...
+               'P_load_kW has %d samples, P_pv_base_kW has %d samples.'], ...
+               dayIdx, ...
+               numel(dayInput.P_load_kW), ...
+               numel(dayInput.P_pv_base_kW));
     end
 
-    if isfield(dd, 'dt_h')
+    if isfield(dd, 'T_amb_C') && ~isempty(dd.T_amb_C)
+        dayInput.T_amb_C = dd.T_amb_C(:);
+
+        if numel(dayInput.T_amb_C) ~= numel(dayInput.P_load_kW)
+            error(['Length mismatch in data.days(%d): ', ...
+                   'T_amb_C has %d samples, P_load_kW has %d samples.'], ...
+                   dayIdx, ...
+                   numel(dayInput.T_amb_C), ...
+                   numel(dayInput.P_load_kW));
+        end
+    end
+
+    if isfield(dd, 'dt_h') && ~isempty(dd.dt_h) && ...
+            isnumeric(dd.dt_h) && isscalar(dd.dt_h) && ...
+            isfinite(dd.dt_h) && dd.dt_h > 0
+
         dayInput.dt_h = dd.dt_h;
     else
-        dayInput.dt_h = 24 / numel(dayInput.P_load_kW);
+        error('Missing or invalid data.days(%d).dt_h.', dayIdx);
     end
+
+    % ---------------------------------------------------------------------
+    % Critical for DC-coupled voltage modelling
+    % ---------------------------------------------------------------------
+    if ~isfield(dd, 'pvGroups') || isempty(dd.pvGroups)
+        error(['Missing data.days(%d).pvGroups. ', ...
+               'DC-coupled PV voltage modelling requires pvGroups with ', ...
+               'V_mpp_module_V or V_string_mpp_V.'], dayIdx);
+    end
+
+    dayInput.pvGroups = dd.pvGroups;
 end
 
 
